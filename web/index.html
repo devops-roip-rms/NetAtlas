@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Local multi-site VLAN discovery and MobaXterm session export">
+  <title>NetAtlas — Network inventory</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="#" aria-label="NetAtlas home"><span class="brand-mark">N</span><span>NetAtlas</span></a>
+      <nav aria-label="Primary navigation">
+        <button class="nav-item active" data-view="overview"><span>⌁</span> Overview</button>
+        <button class="nav-item" data-view="results"><span>▦</span> Hosts <b id="navHostCount">0</b></button>
+        <button class="nav-item" data-view="configuration"><span>⌘</span> Scan setup</button>
+      </nav>
+      <div class="side-bottom">
+        <div class="status-tile">
+          <div class="status-row"><span class="pulse" id="backendPulse"></span><strong id="backendLabel">Connecting</strong></div>
+          <p id="capabilities">Checking local scanner…</p>
+        </div>
+        <p class="privacy">Runs on this computer.<br>Your inventory never leaves it.</p>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">NETWORK OPERATIONS</p>
+          <h1 id="pageTitle">Good morning, operator.</h1>
+        </div>
+        <div class="top-actions">
+          <span class="runtime-badge" id="runtimeBadge"><i></i><span>Detecting runtime</span></span>
+          <button class="icon-button" id="themeButton" aria-label="Switch color theme" title="Switch color theme">◐</button>
+          <button class="button ghost" id="historyButton">Recent scans</button>
+          <button class="button primary" id="newScanButton"><span>＋</span> New scan</button>
+        </div>
+      </header>
+
+      <section class="view active" id="overviewView">
+        <div class="scan-hero">
+          <div class="radar" aria-hidden="true"><div class="radar-sweep"></div><i></i><i></i><i></i></div>
+          <div class="hero-copy">
+            <span class="live-pill" id="heroPill"><i></i> READY TO DISCOVER</span>
+            <h2 id="heroTitle">See every reachable endpoint,<br><em>across both sites.</em></h2>
+            <p id="heroText">Scan SSH, RDP, HTTP and HTTPS across your VLANs. Resolve names, fingerprint operating systems, and build connection-ready sessions.</p>
+            <div class="hero-actions">
+              <button class="button light" id="heroScanButton">Configure & scan <span>→</span></button>
+              <span id="addressEstimate">20 VLANs · up to 5,080 hosts</span>
+            </div>
+          </div>
+          <div class="progress-panel hidden" id="progressPanel">
+            <div class="progress-number"><strong id="progressPercent">0%</strong><span>complete</span></div>
+            <div class="progress-track"><i id="progressBar"></i></div>
+            <p id="progressPhase">Preparing address plan</p>
+            <div class="progress-meta"><span><b id="progressChecked">0</b> checked</span><span><b id="progressFound">0</b> found</span></div>
+            <button class="text-button" id="cancelButton">Stop scan</button>
+          </div>
+        </div>
+
+        <div class="trust-rail" aria-label="Deployment capabilities">
+          <div><span class="trust-icon">◇</span><p><strong>Air-gap native</strong><small>No external calls or assets</small></p></div>
+          <div><span class="trust-icon">⇄</span><p><strong>Dual-protocol Windows</strong><small>SSH and RDP tracked separately</small></p></div>
+          <div><span class="trust-icon">↧</span><p><strong>Connection-ready</strong><small>One organized MobaXterm library</small></p></div>
+        </div>
+
+        <div class="metrics" aria-label="Inventory summary">
+          <article><span class="metric-icon green">⌁</span><div><p>Reachable hosts</p><strong id="metricHosts">0</strong><small id="metricHostsDetail">No scan yet</small></div></article>
+          <article><span class="metric-icon blue">›_</span><div><p>SSH ready</p><strong id="metricSsh">0</strong><small>Port 22 verified</small></div></article>
+          <article><span class="metric-icon violet">▣</span><div><p>RDP ready</p><strong id="metricRdp">0</strong><small>Port 3389 verified</small></div></article>
+          <article><span class="metric-icon amber">◎</span><div><p>Web consoles</p><strong id="metricWeb">0</strong><small>HTTP + HTTPS</small></div></article>
+        </div>
+
+        <div class="overview-grid">
+          <section class="panel hosts-panel">
+            <div class="panel-head"><div><p class="eyebrow">LIVE INVENTORY</p><h3>Recently discovered</h3></div><button class="text-button" data-go="results">View all →</button></div>
+            <div id="recentHosts" class="recent-hosts empty-state"><span>⌁</span><h4>No hosts discovered yet</h4><p>Start a scan to build your inventory.</p></div>
+          </section>
+          <section class="panel posture-panel">
+            <div class="panel-head"><div><p class="eyebrow">OS POSTURE</p><h3>Fleet composition</h3></div></div>
+            <div class="donut-wrap">
+              <div class="donut" id="osDonut"><div><strong id="donutTotal">0</strong><span>hosts</span></div></div>
+              <div class="legend">
+                <p><i class="windows"></i>Windows <b id="osWindows">0</b></p>
+                <p><i class="linux"></i>Linux <b id="osLinux">0</b></p>
+                <p><i class="unknown"></i>Unknown / other <b id="osUnknown">0</b></p>
+              </div>
+            </div>
+            <div class="insight" id="osInsight"><span>i</span><p>OS results improve when Nmap deep inspection or authenticated resource collection is enabled.</p></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" id="resultsView">
+        <div class="section-heading">
+          <div><p class="eyebrow">DISCOVERED ENDPOINTS</p><h2>Host inventory</h2><p>Only endpoints with verified SSH, RDP, HTTP or HTTPS are listed.</p></div>
+          <div class="section-actions"><button class="button ghost" id="inventoryButton" disabled>Download inventory CSV</button><button class="button primary" id="exportButton" disabled>Export MobaXterm</button></div>
+        </div>
+        <div class="table-panel">
+          <div class="table-tools">
+            <label class="search"><span>⌕</span><input id="hostSearch" type="search" placeholder="Search hostname, IP, VLAN or OS…"></label>
+            <select id="siteFilter" aria-label="Filter by site"><option value="">All sites</option></select>
+            <select id="serviceFilter" aria-label="Filter by service"><option value="">All services</option><option>SSH</option><option>RDP</option><option>HTTP</option><option>HTTPS</option></select>
+            <span id="resultCount">0 hosts</span>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>Endpoint</th><th>Site / VLAN</th><th>Services</th><th>Operating system</th><th>Resources</th><th>Confidence</th><th></th></tr></thead>
+              <tbody id="hostTable"><tr><td colspan="7" class="table-empty">Run a scan to populate the inventory.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="configurationView">
+        <div class="section-heading"><div><p class="eyebrow">ADDRESS PLAN</p><h2>Configure scan</h2><p>One IPv4 subnet per line. Labels are optional: <code>VLAN 10, 10.10.10.0/24</code></p></div></div>
+        <form id="scanForm" class="config-grid">
+          <section class="panel config-card">
+            <div class="site-title"><span>A</span><div><h3>Site A</h3><p>Primary location</p></div></div>
+            <label>Site name<input id="siteAName" value="Site A" required></label>
+            <label>VLAN subnets<textarea id="siteAVlans" rows="11" spellcheck="false" required></textarea></label>
+          </section>
+          <section class="panel config-card">
+            <div class="site-title second"><span>B</span><div><h3>Site B</h3><p>Secondary location</p></div></div>
+            <label>Site name<input id="siteBName" value="Site B" required></label>
+            <label>VLAN subnets<textarea id="siteBVlans" rows="11" spellcheck="false" required></textarea></label>
+          </section>
+          <aside class="panel options-card">
+            <div><p class="eyebrow">SCAN PROFILE</p><h3>Discovery options</h3></div>
+            <label class="range-label"><span>Concurrency <b id="concurrencyValue">128</b></span><input id="concurrency" type="range" min="16" max="256" step="16" value="128"></label>
+            <label>Per-port timeout<select id="timeout"><option value="0.3">Fast · 0.3 sec</option><option value="0.5" selected>Balanced · 0.5 sec</option><option value="1">Careful · 1 sec</option><option value="2">WAN · 2 sec</option></select></label>
+            <label class="toggle"><input id="auxiliary" type="checkbox" checked><i></i><span><b>OS helper ports</b><small>Also check SMB and WinRM</small></span></label>
+            <label class="toggle"><input id="deepScan" type="checkbox" checked><i></i><span><b>Nmap deep inspection</b><small>Exact Windows build metadata when available</small></span></label>
+            <div class="divider"></div>
+            <p class="mini-title">Authenticated enrichment</p>
+              <label class="toggle" id="sshAuthOption"><input id="sshResources" type="checkbox"><i></i><span><b>Separate SSH profiles</b><small id="sshAuthHelp">Different Linux and Windows credentials</small></span></label>
+            <div class="conditional" id="sshFields">
+              <div class="credential-profile linux-profile"><p><b>L</b> Linux SSH</p><label>Username<input id="linuxSshUsername" placeholder="root or admin"></label><label>Password<input id="linuxSshPassword" type="password" placeholder="Linux password" autocomplete="new-password"></label></div>
+              <div class="credential-profile windows-profile"><p><b>W</b> Windows OpenSSH</p><label>Username<input id="windowsSshUsername" placeholder="DOMAIN\user or user"></label><label>Password<input id="windowsSshPassword" type="password" placeholder="Windows password" autocomplete="new-password"></label></div>
+              <p class="credential-note">Configure either or both profiles. Passwords stay in memory only while the scan runs and are never written to history or exports.</p>
+            </div>
+            <label class="toggle" id="winrmOption"><input id="windowsResources" type="checkbox"><i></i><span><b>Windows via WinRM</b><small id="winrmHelp">Uses your current Windows identity</small></span></label>
+            <label class="toggle sub-toggle hidden" id="sslToggle"><input id="winrmSsl" type="checkbox"><i></i><span><b>Use WinRM HTTPS</b></span></label>
+            <div class="estimate"><span>Estimated scope</span><strong id="scopeEstimate">5,080 addresses</strong></div>
+            <button class="button primary wide" type="submit" id="startScanButton">Start discovery <span>→</span></button>
+            <p class="safety-note">Only scan networks you own or are authorized to assess.</p>
+          </aside>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="exportDialog">
+    <form method="dialog" class="dialog-card">
+      <button class="dialog-close" value="cancel" aria-label="Close">×</button>
+      <span class="dialog-icon">M</span>
+      <p class="eyebrow">SESSION EXPORT</p><h2>Build MobaXterm library</h2>
+      <p>Creates Windows and Linux folder trees. Windows hosts receive SSH and RDP sessions; Linux hosts receive SSH only. HTTP/HTTPS remain inventory-only.</p>
+      <div class="dialog-fields">
+        <label>Linux SSH username <span>(optional)</span><input id="exportLinuxSshUser" placeholder="root or admin"></label>
+        <label>Windows SSH username <span>(optional)</span><input id="exportWindowsSshUser" placeholder="DOMAIN\user"></label>
+        <label>Default RDP username <span>(optional)</span><input id="exportRdpUser" placeholder="DOMAIN\user"></label>
+      </div>
+      <button type="button" class="button primary wide" id="downloadMoba">Download .mxtsessions</button>
+      <button type="button" class="button ghost wide" id="downloadCsv">Download compatibility CSV</button>
+      <small>Passwords are never included. In MobaXterm, right-click User sessions → Import sessions from file.</small>
+    </form>
+  </dialog>
+
+  <dialog id="historyDialog"><div class="dialog-card history-card"><button class="dialog-close" aria-label="Close" onclick="this.closest('dialog').close()">×</button><p class="eyebrow">LOCAL HISTORY</p><h2>Recent scans</h2><div id="historyList"></div></div></dialog>
+  <dialog id="hostDialog"><div class="dialog-card host-detail-card"><button class="dialog-close" aria-label="Close" onclick="this.closest('dialog').close()">×</button><div id="hostDetail"></div></div></dialog>
+  <div class="toast" id="toast" role="status"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
