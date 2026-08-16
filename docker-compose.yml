@@ -1,0 +1,31 @@
+services:
+  netatlas:
+    image: netatlas:1.2.2
+    build:
+      context: .
+      args:
+        APP_VERSION: 1.2.2
+    container_name: netatlas
+    restart: unless-stopped
+    ports:
+      - "${NETATLAS_BIND_ADDRESS:-0.0.0.0}:8765:8765"
+    volumes:
+      - netatlas-data:/app/data
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/health', timeout=3)"]
+      interval: 20s
+      timeout: 4s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  netatlas-data:
+    name: netatlas-data

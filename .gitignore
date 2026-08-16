@@ -1,0 +1,25 @@
+# Runtime inventory and scan results
+data/
+
+# Generated air-gap bundles and container exports
+dist/
+*.tar
+*.zip
+*.sha256
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

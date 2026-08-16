@@ -1,0 +1,14 @@
+.git
+.gitignore
+data
+dist
+tests
+__pycache__
+*.pyc
+*.pyo
+*.log
+README.md
+start.cmd
+start.ps1
+docker-compose.yml
+scripts
