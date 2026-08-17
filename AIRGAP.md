@@ -12,25 +12,40 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-offline.ps1
 
 For an ARM64 Docker host, add `-Platform linux/arm64`.
 
-The script creates `dist/netatlas-1.2.3-linux-amd64.tar`, its SHA-256 checksum, and the offline loader scripts. Copy the entire `dist` folder to approved removable media.
+The script creates `dist/netatlas-1.2.4-linux-amd64.tar`, its SHA-256 checksum, and the offline loader scripts. Copy the entire `dist` folder to approved removable media.
 
 ## 2. Load and run inside the air gap
 
 Windows Docker host:
 
 ```powershell
-.\load-and-run-airgap.ps1 -Archive .\netatlas-1.2.3-linux-amd64.tar
+New-Item -ItemType Directory -Force .\netatlas-data
+.\load-and-run-airgap.ps1 -Archive .\netatlas-1.2.4-linux-amd64.tar -DataPath .\netatlas-data
 ```
 
-Linux Docker host:
+Linux Docker host—first create the persistent local database folder:
 
 ```sh
-sh ./load-and-run-airgap.sh ./netatlas-1.2.3-linux-amd64.tar
+mkdir -p ./netatlas-data
+sudo chown -R 10001:10001 ./netatlas-data
+sudo chmod 750 ./netatlas-data
 ```
 
-The Linux loader accepts checksum files copied from either Windows or Linux and verifies the hash independently of line-ending format.
+On RHEL or another SELinux-enforcing host, label it for container access:
 
-Open `http://<NETATLAS-NODE-IP>:8765`. The loader publishes on all node interfaces by default. Scan history is kept outside the container in `netatlas-data`, so replacing the image does not erase inventory.
+```sh
+sudo chcon -Rt container_file_t ./netatlas-data
+```
+
+Then load and run NetAtlas:
+
+```sh
+sh ./load-and-run-airgap.sh ./netatlas-1.2.4-linux-amd64.tar 8765 ./netatlas-data 0.0.0.0
+```
+
+The Linux loader accepts checksum files copied from either Windows or Linux and verifies the hash independently of line-ending format. Version 1.2.4 also normalizes the local folder ownership to the container user (UID/GID 10001) and applies Docker's private SELinux label during the mount.
+
+Open `http://<NETATLAS-NODE-IP>:8765`. The loader publishes on all node interfaces by default. `netatlas-data/hosts.db` and scan history stay outside the container, so replacing the image does not erase inventory. Do not delete this folder unless you intentionally want to reset NetAtlas.
 
 ## SSH credentials
 
@@ -59,4 +74,4 @@ The container must have routes to both sites and all VLANs. Docker Desktop norma
 
 Deep Nmap OS detection uses `NET_RAW` and `NET_ADMIN`; the loader grants only those capabilities. The application itself runs as a non-root user with a read-only container filesystem.
 
-HTTP and HTTPS remain visible in inventory but are not exported as MobaXterm sessions. Windows hosts are exported beneath a `Windows` tree with both SSH and RDP sessions. Linux hosts are exported beneath a `Linux` tree with SSH only.
+HTTP and HTTPS remain visible in inventory but are not exported as MobaXterm sessions. Filter or sort any column, select the required hosts, and export only that selection. Windows hosts are exported beneath a `Windows` tree with both SSH and RDP sessions. Linux hosts are exported beneath a `Linux` tree with SSH only.

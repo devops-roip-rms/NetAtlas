@@ -10,6 +10,8 @@ NetAtlas is a local multi-site IPv4 inventory scanner with a browser GUI. It che
 
 The basic scanner uses the Python standard library. For password-authenticated SSH enrichment when running directly on Windows, install `requirements.txt`; the Docker image already includes it. Scan history and the SQLite remembered-host inventory are stored locally under `data/`.
 
+The Hosts and Remembered Hosts tables support per-column filters and click-to-sort headers. Select the required rows in **Hosts** before downloading inventory CSV, compatibility CSV, or MobaXterm sessions; exports contain only the selected hosts.
+
 ## Docker and air-gap deployment
 
 The image includes Python, Nmap, OpenSSH, and the complete GUI. Build a transferable image and checksum with:
@@ -19,6 +21,16 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-offline.ps1
 ```
 
 See `AIRGAP.md` for loading, persistent storage, credential handling, and network routing notes. Runtime operation has no internet dependencies.
+
+Before the first Linux air-gap run, prepare the local database folder from the directory that contains the loader and image archive:
+
+```sh
+mkdir -p ./netatlas-data
+sudo chown -R 10001:10001 ./netatlas-data
+sudo chmod 750 ./netatlas-data
+```
+
+On an SELinux-enforcing host such as RHEL, also run `sudo chcon -Rt container_file_t ./netatlas-data`. The 1.2.4 Linux loader repeats the ownership correction and mounts the folder with the SELinux private-container label. Keep this folder when replacing the container because it contains `hosts.db` and scan history.
 
 Docker deployments listen on all node interfaces by default. Restrict TCP/8765 to the management subnet or use an HTTPS reverse proxy because scan credentials are entered through the web interface.
 
@@ -36,6 +48,6 @@ Docker deployments listen on all node interfaces by default. Restrict TCP/8765 t
 
 ## MobaXterm export
 
-After a completed scan, choose **Export MobaXterm**. Windows hosts are grouped beneath `Windows` and receive SSH and RDP entries. Linux hosts are grouped beneath `Linux` and receive SSH only. Site and VLAN folders are retained under each OS block. HTTP and HTTPS remain inventory-only and are never exported as sessions. Passwords are never exported. A generic CSV is also available as a compatibility fallback.
+After a completed scan, filter or sort the inventory, select the required hosts, and choose **Export selected**. Windows hosts are grouped beneath `Windows` and receive SSH and RDP entries. Linux hosts are grouped beneath `Linux` and receive SSH only. Site and VLAN folders are retained under each OS block. HTTP and HTTPS remain inventory-only and are never exported as sessions. Passwords are never exported. A selected-host inventory CSV and generic compatibility CSV are also available.
 
 In MobaXterm, right-click **User sessions** and choose **Import sessions from file**.

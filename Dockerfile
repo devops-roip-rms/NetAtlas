@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 FROM python:3.13-slim-bookworm
 
-ARG APP_VERSION=1.2.3
+ARG APP_VERSION=1.2.4
 LABEL org.opencontainers.image.title="NetAtlas" \
       org.opencontainers.image.description="Air-gap friendly multi-site network inventory and MobaXterm exporter" \
       org.opencontainers.image.version="${APP_VERSION}"

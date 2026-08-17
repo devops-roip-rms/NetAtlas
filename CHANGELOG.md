@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.4
+
+- Added per-column filtering and sortable headers to current and remembered host inventories.
+- Added host selection and selected-only inventory, compatibility CSV, and MobaXterm exports.
+- Increased the minimum operational font sizes and strengthened contrast in light and dark modes.
+- Removed promotional capability and privacy panels that did not help operate the scanner.
+- Documented the local `netatlas-data` setup and made the Linux air-gap loader normalize UID/GID 10001 ownership and SELinux labeling automatically.
+
 ## 1.2.3
 
 - Increased the GUI type scale, spacing, and table resolution for 1080p and 1440p operations displays.

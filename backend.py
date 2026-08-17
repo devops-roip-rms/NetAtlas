@@ -37,7 +37,7 @@ WEB_DIR = APP_DIR / "web"
 DATA_DIR = Path(os.environ.get("NETATLAS_DATA_DIR", APP_DIR / "data")).resolve()
 DATA_DIR.mkdir(exist_ok=True)
 HOSTS_DB = DATA_DIR / "hosts.db"
-APP_VERSION = "1.2.3"
+APP_VERSION = "1.2.4"
 SENSITIVE_CONFIG_KEYS = {"ssh_password", "linux_ssh_password", "windows_ssh_password", "password"}
 
 PRIMARY_PORTS = {22: "SSH", 80: "HTTP", 443: "HTTPS", 3389: "RDP"}
@@ -763,9 +763,26 @@ def browser_session(host: dict, url: str) -> str:
     return moba_line(313, fields, f"{host['site']} | {host['vlan']} | Web console")
 
 
-def export_mobaxterm(job: ScanJob, linux_ssh_user: str = "", rdp_user: str = "", windows_ssh_user: str = "") -> bytes:
+def selected_export_hosts(job: ScanJob, selection: object) -> list[dict]:
+    if not isinstance(selection, list) or not selection:
+        raise ValueError("Select at least one host to export")
+    keys: set[tuple[str, str]] = set()
+    for item in selection:
+        if not isinstance(item, dict):
+            raise ValueError("Invalid host selection")
+        site, ip = clean_text(item.get("site"), 120), clean_text(item.get("ip"), 64)
+        if not site or not ip:
+            raise ValueError("Each selected host needs a site and IP address")
+        keys.add((site, ip))
+    hosts = [host for host in job.results if (clean_text(host.get("site"), 120), clean_text(host.get("ip"), 64)) in keys]
+    if not hosts:
+        raise ValueError("None of the selected hosts belong to this scan")
+    return hosts
+
+
+def export_mobaxterm(job: ScanJob, linux_ssh_user: str = "", rdp_user: str = "", windows_ssh_user: str = "", hosts: list[dict] | None = None) -> bytes:
     sections: dict[str, list[tuple[str, str]]] = {}
-    for host in job.results:
+    for host in job.results if hosts is None else hosts:
         family = host.get("os_family")
         block = family if family in {"Windows", "Linux"} else "Unclassified"
         folder = f"{block}\\{safe_name(host['site'])}\\{safe_name(host['vlan'])}"
@@ -795,11 +812,11 @@ def export_mobaxterm(job: ScanJob, linux_ssh_user: str = "", rdp_user: str = "",
     return "\r\n".join(lines).encode("cp1252", "replace")
 
 
-def export_csv(job: ScanJob, linux_ssh_user: str = "", rdp_user: str = "", windows_ssh_user: str = "") -> bytes:
+def export_csv(job: ScanJob, linux_ssh_user: str = "", rdp_user: str = "", windows_ssh_user: str = "", hosts: list[dict] | None = None) -> bytes:
     buffer = io.StringIO(newline="")
     writer = csv.writer(buffer)
     writer.writerow(["name", "protocol", "host", "port", "username", "folder", "url"])
-    for host in job.results:
+    for host in job.results if hosts is None else hosts:
         family = host.get("os_family")
         block = family if family in {"Windows", "Linux"} else "Unclassified"
         folder = f"NetAtlas\\{block}\\{host['site']}\\{host['vlan']}"
@@ -817,7 +834,7 @@ def export_csv(job: ScanJob, linux_ssh_user: str = "", rdp_user: str = "", windo
     return buffer.getvalue().encode("utf-8-sig")
 
 
-def export_inventory_csv(job: ScanJob) -> bytes:
+def export_inventory_csv(job: ScanJob, hosts: list[dict] | None = None) -> bytes:
     buffer = io.StringIO(newline="")
     writer = csv.writer(buffer)
     writer.writerow([
@@ -825,7 +842,7 @@ def export_inventory_csv(job: ScanJob) -> bytes:
         "os_family", "os_version", "os_confidence", "os_evidence", "resource_status",
         "cpu_cores", "ram_gb", "disk_root_gb", "disk_c_gb", "disk_free_gb", "web_urls",
     ])
-    for host in job.results:
+    for host in job.results if hosts is None else hosts:
         resources = host.get("resources", {})
         writer.writerow([
             host.get("site", ""), host.get("vlan", ""), host.get("cidr", ""),
@@ -872,12 +889,45 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def send_download(self, data: bytes, filename: str, content_type: str = "application/octet-stream") -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_POST(self) -> None:
         try:
             path = urlparse(self.path).path
             if path == "/api/remembered-hosts/role":
                 payload = self.json_body()
                 self.send_json(update_remembered_role(payload.get("site"), payload.get("ip"), payload.get("role")))
+                return
+            export_match = re.fullmatch(r"/api/scans/([a-f0-9]+)/export", path)
+            if export_match:
+                job = JOBS.get(export_match.group(1))
+                if not job:
+                    self.send_json({"error": "Scan not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                payload = self.json_body()
+                hosts = selected_export_hosts(job, payload.get("hosts"))
+                export_format = clean_text(payload.get("format"), 20).lower()
+                linux_ssh_user = clean_text(payload.get("linux_ssh_user"), 100)
+                windows_ssh_user = clean_text(payload.get("windows_ssh_user"), 100)
+                rdp_user = clean_text(payload.get("rdp_user"), 100)
+                timestamp = datetime.now().strftime('%Y%m%d-%H%M')
+                if export_format == "mxtsessions":
+                    data = export_mobaxterm(job, linux_ssh_user, rdp_user, windows_ssh_user, hosts)
+                    self.send_download(data, f"NetAtlas-selected-{timestamp}.mxtsessions")
+                elif export_format == "csv":
+                    data = export_csv(job, linux_ssh_user, rdp_user, windows_ssh_user, hosts)
+                    self.send_download(data, f"NetAtlas-selected-{timestamp}.csv", "text/csv; charset=utf-8")
+                elif export_format == "inventory":
+                    data = export_inventory_csv(job, hosts)
+                    self.send_download(data, f"NetAtlas-inventory-selected-{timestamp}.csv", "text/csv; charset=utf-8")
+                else:
+                    raise ValueError("Export format must be mxtsessions, csv, or inventory")
                 return
             if path == "/api/scans":
                 config = self.json_body()

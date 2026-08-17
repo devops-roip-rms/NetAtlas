@@ -1,10 +1,10 @@
 services:
   netatlas:
-    image: netatlas:1.2.3
+    image: netatlas:1.2.4
     build:
       context: .
       args:
-        APP_VERSION: 1.2.3
+        APP_VERSION: 1.2.4
     container_name: netatlas
     restart: unless-stopped
     ports:
