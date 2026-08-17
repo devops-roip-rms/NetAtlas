@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import socket
+import sqlite3
 import ssl
 import subprocess
 import threading
@@ -35,7 +36,8 @@ APP_DIR = Path(__file__).resolve().parent
 WEB_DIR = APP_DIR / "web"
 DATA_DIR = Path(os.environ.get("NETATLAS_DATA_DIR", APP_DIR / "data")).resolve()
 DATA_DIR.mkdir(exist_ok=True)
-APP_VERSION = "1.2.2"
+HOSTS_DB = DATA_DIR / "hosts.db"
+APP_VERSION = "1.2.3"
 SENSITIVE_CONFIG_KEYS = {"ssh_password", "linux_ssh_password", "windows_ssh_password", "password"}
 
 PRIMARY_PORTS = {22: "SSH", 80: "HTTP", 443: "HTTPS", 3389: "RDP"}
@@ -59,6 +61,53 @@ def clean_text(value: object, limit: int = 240) -> str:
 def safe_name(value: str) -> str:
     value = clean_text(value, 80).replace("=", "-").replace("#", "-").replace("%", "-")
     return value or "Unnamed"
+
+
+def normalize_hostname(value: object) -> str:
+    """Return a display-safe hostname without the internal DNS suffix."""
+    hostname = clean_text(value, 180).rstrip(".")
+    return re.sub(r"(?i)\.tng\.topsecret$", "", hostname).rstrip(".")
+
+
+def infer_host_role(host: dict) -> str:
+    """Infer a useful role label without claiming more precision than the evidence supports."""
+    hostname = normalize_hostname(host.get("hostname")).lower()
+    short = hostname.split(".", 1)[0]
+    services = set(host.get("services", []))
+    open_ports = set(host.get("open_ports", []))
+    patterns = (
+        (r"(^|[-_])(dc|adc)\d*($|[-_])", "Domain Controller"),
+        (r"(^|[-_])(db|sql|ora|oracle|postgres|pgsql|mysql)\d*($|[-_])", "Database Server"),
+        (r"(^|[-_])(web|www|nginx|apache)\d*($|[-_])", "Web Server"),
+        (r"(^|[-_])(app|api|middleware|mw)\d*($|[-_])", "Application Server"),
+        (r"(^|[-_])(fs|file|nas)\d*($|[-_])", "File Server"),
+        (r"(^|[-_])(vcenter|esx|esxi|hyperv|hv)\d*($|[-_])", "Virtualization Host"),
+        (r"(^|[-_])(backup|veeam)\d*($|[-_])", "Backup Server"),
+        (r"(^|[-_])(monitor|monitoring|zabbix|nagios|prometheus)\d*($|[-_])", "Monitoring Server"),
+        (r"(^|[-_])(jump|bastion)\d*($|[-_])", "Jump Host"),
+        (r"(^|[-_])(print|printer)\d*($|[-_])", "Print Server"),
+    )
+    for pattern, role in patterns:
+        if re.search(pattern, short):
+            return role
+    if 445 in open_ports:
+        return "File / Windows Server"
+    if {"HTTP", "HTTPS"} & services:
+        return "Web Service"
+    if host.get("os_family") == "Windows" or "RDP" in services:
+        return "Windows Server"
+    if host.get("os_family") == "Linux":
+        return "Linux Server"
+    if "SSH" in services:
+        return "SSH Host"
+    return "Network Endpoint"
+
+
+def normalize_host_record(host: dict) -> dict:
+    host["hostname"] = normalize_hostname(host.get("hostname"))
+    if not host.get("role"):
+        host["role"] = infer_host_role(host)
+    return host
 
 
 @dataclass
@@ -189,7 +238,7 @@ def http_probe(ip: str, port: int, timeout: float) -> dict:
 
 def reverse_dns(ip: str) -> str:
     try:
-        return clean_text(socket.gethostbyaddr(ip)[0], 160)
+        return normalize_hostname(socket.gethostbyaddr(ip)[0])
     except (OSError, socket.herror):
         return ""
 
@@ -230,7 +279,7 @@ def scan_host(item: dict, timeout: float, auxiliary: bool) -> dict | None:
     family, version, confidence, evidence = infer_os(opened, banner, web)
     services = [PRIMARY_PORTS[p] for p in PRIMARY_PORTS if p in opened]
     hostname = reverse_dns(ip)
-    return {
+    host = {
         **item,
         "hostname": hostname,
         "hostname_source": "Reverse DNS" if hostname else "Unresolved",
@@ -246,6 +295,8 @@ def scan_host(item: dict, timeout: float, auxiliary: bool) -> dict | None:
         "resource_status": "Credentials not supplied",
         "discovered_at": utc_now(),
     }
+    host["role"] = infer_host_role(host)
+    return host
 
 
 def windows_version_from_build(version: str) -> str:
@@ -303,7 +354,7 @@ def enrich_nmap(host: dict) -> None:
                 hostname = script_field(output, "DNS_Computer_Name") or script_field(output, "NetBIOS_Computer_Name")
                 version = script_field(output, "Product_Version")
                 if hostname:
-                    host["hostname"] = hostname
+                    host["hostname"] = normalize_hostname(hostname)
                     host["hostname_source"] = "RDP identity"
                 if version:
                     host["os_family"] = "Windows"
@@ -314,7 +365,7 @@ def enrich_nmap(host: dict) -> None:
                 hostname = script_field(output, "Computer name") or script_field(output, "FQDN")
                 os_name = script_field(output, "OS")
                 if hostname:
-                    host["hostname"] = hostname
+                    host["hostname"] = normalize_hostname(hostname)
                     host["hostname_source"] = "SMB identity"
                 if os_name:
                     host["os_family"] = "Windows"
@@ -347,7 +398,7 @@ def apply_linux_ssh(host: dict, client: object) -> bool:
     values = (lines[pos + 1 :] + [""] * 6)[:6]
     hostname, kernel, release, cores, ram, disk = values
     if hostname:
-        host["hostname"] = hostname
+        host["hostname"] = normalize_hostname(hostname)
         host["hostname_source"] = "Authenticated SSH"
     host["os_family"] = "Linux"
     host["os_version"] = release or kernel or "Linux"
@@ -376,7 +427,7 @@ def apply_windows_ssh(host: dict, client: object) -> bool:
     if data.get("netatlas") != "windows":
         return False
     if data.get("hostname"):
-        host["hostname"] = clean_text(data["hostname"], 180)
+        host["hostname"] = normalize_hostname(data["hostname"])
         host["hostname_source"] = "Authenticated Windows OpenSSH"
     host["os_family"] = "Windows"
     host["os_version"] = clean_text(f"{data.get('caption', '')} {data.get('version', '')}")
@@ -458,7 +509,7 @@ def enrich_windows_resources(host: dict, use_ssl: bool) -> None:
         proc = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", encoded], capture_output=True, text=True, timeout=18, check=False)
         data = json.loads(proc.stdout.strip())
         if data.get("hostname"):
-            host["hostname"] = clean_text(data["hostname"], 180)
+            host["hostname"] = normalize_hostname(data["hostname"])
             host["hostname_source"] = "Authenticated WinRM"
         host["os_version"] = clean_text(f"{data.get('caption', '')} {data.get('version', '')}")
         host["os_confidence"] = 100
@@ -467,6 +518,155 @@ def enrich_windows_resources(host: dict, use_ssl: bool) -> None:
         host["resource_status"] = "Collected via WinRM"
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
         return
+
+
+def hosts_db_connection() -> sqlite3.Connection:
+    HOSTS_DB.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(HOSTS_DB, timeout=15)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA busy_timeout=15000")
+    return connection
+
+
+def init_hosts_db() -> None:
+    connection = hosts_db_connection()
+    try:
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS remembered_hosts (
+                site TEXT NOT NULL,
+                ip TEXT NOT NULL,
+                hostname TEXT NOT NULL,
+                role TEXT NOT NULL,
+                role_locked INTEGER NOT NULL DEFAULT 0,
+                vlan TEXT NOT NULL DEFAULT '',
+                cidr TEXT NOT NULL DEFAULT '',
+                services_json TEXT NOT NULL DEFAULT '[]',
+                open_ports_json TEXT NOT NULL DEFAULT '[]',
+                web_json TEXT NOT NULL DEFAULT '[]',
+                os_family TEXT NOT NULL DEFAULT '',
+                os_version TEXT NOT NULL DEFAULT '',
+                os_confidence INTEGER NOT NULL DEFAULT 0,
+                os_evidence TEXT NOT NULL DEFAULT '',
+                resources_json TEXT NOT NULL DEFAULT '{}',
+                resource_status TEXT NOT NULL DEFAULT '',
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                last_scan_id TEXT NOT NULL,
+                seen_count INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (site, ip)
+            )
+            """
+        )
+        connection.execute("CREATE INDEX IF NOT EXISTS remembered_hosts_hostname ON remembered_hosts(hostname)")
+        connection.execute("CREATE INDEX IF NOT EXISTS remembered_hosts_last_seen ON remembered_hosts(last_seen DESC)")
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def remember_job_hosts(job: ScanJob) -> int:
+    """Merge resolved scan results into the durable host inventory."""
+    init_hosts_db()
+    remembered = 0
+    connection = hosts_db_connection()
+    try:
+        for host in job.results:
+            normalize_host_record(host)
+            if not host.get("hostname"):
+                continue
+            observed = host.get("discovered_at") or job.finished_at or utc_now()
+            role = clean_text(host.get("role") or infer_host_role(host), 80)
+            connection.execute(
+                """
+                INSERT INTO remembered_hosts (
+                    site, ip, hostname, role, vlan, cidr, services_json, open_ports_json,
+                    web_json, os_family, os_version, os_confidence, os_evidence,
+                    resources_json, resource_status, first_seen, last_seen, last_scan_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(site, ip) DO UPDATE SET
+                    hostname=excluded.hostname,
+                    role=CASE WHEN remembered_hosts.role_locked=1 THEN remembered_hosts.role ELSE excluded.role END,
+                    vlan=excluded.vlan,
+                    cidr=excluded.cidr,
+                    services_json=excluded.services_json,
+                    open_ports_json=excluded.open_ports_json,
+                    web_json=excluded.web_json,
+                    os_family=excluded.os_family,
+                    os_version=excluded.os_version,
+                    os_confidence=excluded.os_confidence,
+                    os_evidence=excluded.os_evidence,
+                    resources_json=excluded.resources_json,
+                    resource_status=excluded.resource_status,
+                    last_seen=excluded.last_seen,
+                    last_scan_id=excluded.last_scan_id,
+                    seen_count=remembered_hosts.seen_count+1
+                """,
+                (
+                    clean_text(host.get("site"), 60), clean_text(host.get("ip"), 64), host["hostname"], role,
+                    clean_text(host.get("vlan"), 60), clean_text(host.get("cidr"), 64),
+                    json.dumps(host.get("services", [])), json.dumps(host.get("open_ports", [])),
+                    json.dumps(host.get("web", [])), clean_text(host.get("os_family"), 40),
+                    clean_text(host.get("os_version"), 180), int(host.get("os_confidence") or 0),
+                    clean_text(host.get("os_evidence"), 180), json.dumps(host.get("resources", {})),
+                    clean_text(host.get("resource_status"), 240), observed, observed, job.id,
+                ),
+            )
+            remembered += 1
+        connection.commit()
+    finally:
+        connection.close()
+    return remembered
+
+
+def decode_json_field(value: str, fallback: object) -> object:
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return fallback
+
+
+def list_remembered_hosts() -> list[dict]:
+    init_hosts_db()
+    connection = hosts_db_connection()
+    try:
+        rows = connection.execute("SELECT * FROM remembered_hosts ORDER BY last_seen DESC").fetchall()
+    finally:
+        connection.close()
+    hosts = []
+    for row in rows:
+        host = dict(row)
+        host["services"] = decode_json_field(host.pop("services_json"), [])
+        host["open_ports"] = decode_json_field(host.pop("open_ports_json"), [])
+        host["web"] = decode_json_field(host.pop("web_json"), [])
+        host["resources"] = decode_json_field(host.pop("resources_json"), {})
+        host["role_locked"] = bool(host.get("role_locked"))
+        normalize_host_record(host)
+        hosts.append(host)
+    return hosts
+
+
+def update_remembered_role(site: object, ip: object, role: object) -> dict:
+    site_name = clean_text(site, 60)
+    address = clean_text(ip, 64)
+    role_name = clean_text(role, 80)
+    if not site_name or not address or not role_name:
+        raise ValueError("Site, IP address and role are required")
+    ipaddress.ip_address(address)
+    init_hosts_db()
+    connection = hosts_db_connection()
+    try:
+        cursor = connection.execute(
+            "UPDATE remembered_hosts SET role=?, role_locked=1 WHERE site=? AND ip=?",
+            (role_name, site_name, address),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("Remembered host was not found")
+        connection.commit()
+    finally:
+        connection.close()
+    return {"site": site_name, "ip": address, "role": role_name, "role_locked": True}
 
 
 def save_job(job: ScanJob) -> None:
@@ -519,7 +719,17 @@ def run_scan(job: ScanJob) -> None:
             with ThreadPoolExecutor(max_workers=min(8, workers)) as pool:
                 list(pool.map(lambda h: enrich_windows_resources(h, bool(job.config.get("winrm_ssl"))), job.results))
 
+        for host in job.results:
+            host["hostname"] = normalize_hostname(host.get("hostname"))
+            host["role"] = infer_host_role(host)
         job.results.sort(key=lambda r: (r["site"].lower(), ipaddress.ip_address(r["ip"])))
+        if job.results:
+            job.current_phase = "Updating remembered hosts"
+            try:
+                remember_job_hosts(job)
+            except (OSError, sqlite3.Error) as exc:
+                if len(job.errors) < 20:
+                    job.errors.append(f"Remembered hosts database: {clean_text(exc)}")
         job.status = "cancelled" if job.cancelled else "complete"
         job.current_phase = "Cancelled" if job.cancelled else "Complete"
     except Exception as exc:
@@ -540,12 +750,12 @@ def moba_line(icon: int, fields: list[object], comment: str = "") -> str:
 
 def ssh_session(host: dict, username: str) -> str:
     fields = [0, host["ip"], 22, username, "", -1, -1, "", "", "", "", 0, 0 if username else -1, 0, "", "", -1, 0, 0, 0, "", 1080, "", 0, 0, 1, "", 0, "", "", "", 0, -1, -1, 0]
-    return moba_line(109, fields, f"{host['site']} | {host['vlan']} | {host.get('os_version') or host.get('os_family')}")
+    return moba_line(109, fields, f"{host['site']} | {host['vlan']} | {host.get('role')} | {host.get('os_version') or host.get('os_family')}")
 
 
 def rdp_session(host: dict, username: str) -> str:
     fields = [4, host["ip"], 3389, username, 0, 0, 0, 0, -1, 0, 0, -1, "", "", "", "", 0, 0, "", -1, "", -1, -1, 0, -1, 0, -1, 0, 0, 0, 0, ""]
-    return moba_line(91, fields, f"{host['site']} | {host['vlan']} | {host.get('os_version') or 'Windows host'}")
+    return moba_line(91, fields, f"{host['site']} | {host['vlan']} | {host.get('role')} | {host.get('os_version') or 'Windows host'}")
 
 
 def browser_session(host: dict, url: str) -> str:
@@ -611,7 +821,7 @@ def export_inventory_csv(job: ScanJob) -> bytes:
     buffer = io.StringIO(newline="")
     writer = csv.writer(buffer)
     writer.writerow([
-        "site", "vlan", "cidr", "hostname", "hostname_source", "ip", "services", "open_ports",
+        "site", "vlan", "cidr", "hostname", "hostname_source", "role", "ip", "services", "open_ports",
         "os_family", "os_version", "os_confidence", "os_evidence", "resource_status",
         "cpu_cores", "ram_gb", "disk_root_gb", "disk_c_gb", "disk_free_gb", "web_urls",
     ])
@@ -619,7 +829,7 @@ def export_inventory_csv(job: ScanJob) -> bytes:
         resources = host.get("resources", {})
         writer.writerow([
             host.get("site", ""), host.get("vlan", ""), host.get("cidr", ""),
-            host.get("hostname", ""), host.get("hostname_source", ""), host.get("ip", ""),
+            host.get("hostname", ""), host.get("hostname_source", ""), host.get("role", ""), host.get("ip", ""),
             ",".join(host.get("services", [])), ",".join(str(p) for p in host.get("open_ports", [])),
             host.get("os_family", ""), host.get("os_version", ""), host.get("os_confidence", ""),
             host.get("os_evidence", ""), host.get("resource_status", ""),
@@ -665,6 +875,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         try:
             path = urlparse(self.path).path
+            if path == "/api/remembered-hosts/role":
+                payload = self.json_body()
+                self.send_json(update_remembered_role(payload.get("site"), payload.get("ip"), payload.get("role")))
+                return
             if path == "/api/scans":
                 config = self.json_body()
                 legacy_user = clean_text(config.pop("ssh_username", ""), 100)
@@ -721,6 +935,9 @@ class Handler(BaseHTTPRequestHandler):
             with JOBS_LOCK:
                 jobs = [job.public() for job in JOBS.values()]
             self.send_json(jobs)
+            return
+        if path == "/api/remembered-hosts":
+            self.send_json(list_remembered_hosts())
             return
         match = re.fullmatch(r"/api/scans/([a-f0-9]+)", path)
         if match:
@@ -789,6 +1006,8 @@ def load_saved_jobs() -> None:
             for key in ("status", "created_at", "started_at", "finished_at", "total", "completed", "results", "errors", "current_phase"):
                 if key in data:
                     setattr(job, key, data[key])
+            for host in job.results:
+                normalize_host_record(host)
             JOBS[job.id] = job
         except (OSError, json.JSONDecodeError, KeyError):
             continue
@@ -800,6 +1019,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()
+    init_hosts_db()
     load_saved_jobs()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}"

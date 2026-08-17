@@ -12,20 +12,20 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-offline.ps1
 
 For an ARM64 Docker host, add `-Platform linux/arm64`.
 
-The script creates `dist/netatlas-1.2.2-linux-amd64.tar`, its SHA-256 checksum, and the offline loader scripts. Copy the entire `dist` folder to approved removable media.
+The script creates `dist/netatlas-1.2.3-linux-amd64.tar`, its SHA-256 checksum, and the offline loader scripts. Copy the entire `dist` folder to approved removable media.
 
 ## 2. Load and run inside the air gap
 
 Windows Docker host:
 
 ```powershell
-.\load-and-run-airgap.ps1 -Archive .\netatlas-1.2.2-linux-amd64.tar
+.\load-and-run-airgap.ps1 -Archive .\netatlas-1.2.3-linux-amd64.tar
 ```
 
 Linux Docker host:
 
 ```sh
-sh ./load-and-run-airgap.sh ./netatlas-1.2.2-linux-amd64.tar
+sh ./load-and-run-airgap.sh ./netatlas-1.2.3-linux-amd64.tar
 ```
 
 The Linux loader accepts checksum files copied from either Windows or Linux and verifies the hash independently of line-ending format.

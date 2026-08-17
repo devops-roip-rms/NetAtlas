@@ -8,7 +8,7 @@ NetAtlas is a local multi-site IPv4 inventory scanner with a browser GUI. It che
 2. Double-click `start.cmd`. Alternatively, run `powershell -ExecutionPolicy Bypass -File .\start.ps1`.
 3. NetAtlas opens at `http://127.0.0.1:8765`.
 
-The basic scanner uses the Python standard library. For password-authenticated SSH enrichment when running directly on Windows, install `requirements.txt`; the Docker image already includes it. Scan history is stored locally under `data/`.
+The basic scanner uses the Python standard library. For password-authenticated SSH enrichment when running directly on Windows, install `requirements.txt`; the Docker image already includes it. Scan history and the SQLite remembered-host inventory are stored locally under `data/`.
 
 ## Docker and air-gap deployment
 
@@ -29,6 +29,9 @@ Docker deployments listen on all node interfaces by default. Restrict TCP/8765 t
 - SSH resource collection supports separate username/password profiles for Linux and Windows OpenSSH. Passwords are memory-only and cleared after the scan; they are never saved or exported.
 - Windows resource collection uses PowerShell remoting (WinRM) with the Windows identity running NetAtlas. The target must allow WinRM and authorize that identity.
 - Services are independent: a Windows server listening on both SSH and RDP is listed with both protocols and receives both MobaXterm sessions.
+- NetAtlas infers a role name from the hostname, operating system, and verified services. Role names can be edited in **Remembered Hosts** and manual values survive later scans.
+- Only resolved hostnames are added to **Remembered Hosts**. Repeat scans update the existing site/IP record and add newly resolved hosts.
+- The internal DNS suffix `.tng.topsecret` is removed from displayed, remembered, CSV, and MobaXterm hostnames.
 - Scanning uses only the networks you enter. Only scan networks you own or are authorized to assess.
 
 ## MobaXterm export

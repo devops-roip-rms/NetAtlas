@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.3
+
+- Increased the GUI type scale, spacing, and table resolution for 1080p and 1440p operations displays.
+- Added inferred role names to scan results, host details, inventory CSV, and MobaXterm session comments.
+- Added a persistent SQLite-backed Remembered Hosts view that merges resolved hosts across scans.
+- Added editable role names; manually assigned roles are preserved when later scans refresh a host.
+- Excluded unresolved hostnames from remembered inventory and removed the `.tng.topsecret` suffix from displayed and exported names.
+
 ## 1.2.2
 
 - Added independent username/password profiles for Linux SSH and Windows OpenSSH.
