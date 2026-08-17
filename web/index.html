@@ -14,6 +14,7 @@
       <nav aria-label="Primary navigation">
         <button class="nav-item active" data-view="overview"><span>⌁</span> Overview</button>
         <button class="nav-item" data-view="results"><span>▦</span> Hosts <b id="navHostCount">0</b></button>
+        <button class="nav-item" data-view="remembered"><span>★</span> Remembered <b id="navRememberedCount">0</b></button>
         <button class="nav-item" data-view="configuration"><span>⌘</span> Scan setup</button>
       </nav>
       <div class="side-bottom">
@@ -107,8 +108,28 @@
           </div>
           <div class="table-scroll">
             <table>
-              <thead><tr><th>Endpoint</th><th>Site / VLAN</th><th>Services</th><th>Operating system</th><th>Resources</th><th>Confidence</th><th></th></tr></thead>
-              <tbody id="hostTable"><tr><td colspan="7" class="table-empty">Run a scan to populate the inventory.</td></tr></tbody>
+              <thead><tr><th>Endpoint</th><th>Role</th><th>Site / VLAN</th><th>Services</th><th>Operating system</th><th>Resources</th><th>Confidence</th><th></th></tr></thead>
+              <tbody id="hostTable"><tr><td colspan="8" class="table-empty">Run a scan to populate the inventory.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="rememberedView">
+        <div class="section-heading">
+          <div><p class="eyebrow">DURABLE INVENTORY</p><h2>Remembered Hosts</h2><p>Resolved hosts are added automatically. Later scans refresh existing records and preserve manually assigned roles.</p></div>
+          <span class="memory-status"><i></i> Stored in the local NetAtlas database</span>
+        </div>
+        <div class="table-panel remembered-panel">
+          <div class="table-tools">
+            <label class="search"><span>⌕</span><input id="rememberedSearch" type="search" placeholder="Search hostname, IP, role, VLAN or OS…"></label>
+            <select id="rememberedSiteFilter" aria-label="Filter remembered hosts by site"><option value="">All sites</option></select>
+            <span id="rememberedCount">0 remembered hosts</span>
+          </div>
+          <div class="table-scroll">
+            <table class="remembered-table">
+              <thead><tr><th>Endpoint</th><th>Role name</th><th>Site / VLAN</th><th>Services</th><th>Operating system</th><th>Resources</th><th>Last seen</th><th>Seen</th><th></th></tr></thead>
+              <tbody id="rememberedTable"><tr><td colspan="9" class="table-empty">Resolved hosts will appear here after a scan.</td></tr></tbody>
             </table>
           </div>
         </div>

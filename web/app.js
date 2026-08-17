@@ -1,6 +1,6 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
-const state = { health: null, jobs: [], job: null, timer: null };
+const state = { health: null, jobs: [], job: null, timer: null, remembered: [] };
 const savedTheme = localStorage.getItem("netatlas-theme");
 if (savedTheme) document.documentElement.dataset.theme = savedTheme;
 $("#themeButton").addEventListener("click", () => {
@@ -21,8 +21,9 @@ function toast(message) {
 function go(view) {
   $$(".view").forEach(x => x.classList.toggle("active", x.id === `${view}View`));
   $$(".nav-item").forEach(x => x.classList.toggle("active", x.dataset.view === view));
-  const labels = {overview:"Good morning, operator.", results:"Your discovered estate.", configuration:"Define the scan boundary."};
+  const labels = {overview:"Good morning, operator.", results:"Your discovered estate.", remembered:"Your durable host inventory.", configuration:"Define the scan boundary."};
   $("#pageTitle").textContent = labels[view];
+  if (view === "remembered") loadRemembered();
 }
 $$(".nav-item").forEach(x => x.addEventListener("click", () => go(x.dataset.view)));
 $$('[data-go]').forEach(x => x.addEventListener("click", () => go(x.dataset.go)));
@@ -73,7 +74,7 @@ async function checkHealth() {
       $("#sshAuthOption").classList.add("disabled-option");
       $("#sshAuthHelp").textContent = "Install requirements or use the Docker image";
     }
-    await loadHistory();
+    await Promise.all([loadHistory(), loadRemembered()]);
   } catch (_) {
     $("#backendLabel").textContent = "Scanner offline"; $("#capabilities").textContent = "Restart NetAtlas and refresh this page.";
   }
@@ -114,7 +115,7 @@ async function poll() {
   if (!state.job) return;
   try {
     state.job = await api(`/api/scans/${state.job.id}`); render(state.job);
-    if (["complete","failed","cancelled"].includes(state.job.status)) { clearInterval(state.timer); state.timer = null; loadHistory(); }
+    if (["complete","failed","cancelled"].includes(state.job.status)) { clearInterval(state.timer); state.timer = null; Promise.all([loadHistory(), loadRemembered()]); }
   } catch (error) { clearInterval(state.timer); toast(error.message); }
 }
 
@@ -150,7 +151,7 @@ function render(job) {
 function renderRecent(results) {
   const el = $("#recentHosts");
   if (!results.length) { el.className = "recent-hosts empty-state"; el.innerHTML = "<span>⌁</span><h4>No hosts discovered yet</h4><p>Start a scan to build your inventory.</p>"; return; }
-  el.className = "recent-hosts"; el.innerHTML = results.slice(-5).reverse().map(host => `<div class="host-row"><span class="host-avatar">${host.os_family === "Windows" ? "W" : host.os_family === "Linux" ? "L" : "?"}</span><div><strong>${esc(host.hostname || host.ip)}</strong><small>${esc(host.ip)}</small></div><div class="service-chips">${host.services.map(serviceChip).join("")}</div><div><strong>${esc(host.site)}</strong><small>${esc(host.vlan)}</small></div></div>`).join("");
+  el.className = "recent-hosts"; el.innerHTML = results.slice(-5).reverse().map(host => `<div class="host-row"><span class="host-avatar">${host.os_family === "Windows" ? "W" : host.os_family === "Linux" ? "L" : "?"}</span><div><strong>${esc(host.hostname || host.ip)}</strong><small>${esc(host.ip)} · ${esc(host.role || "Network Endpoint")}</small></div><div class="service-chips">${host.services.map(serviceChip).join("")}</div><div><strong>${esc(host.site)}</strong><small>${esc(host.vlan)}</small></div></div>`).join("");
 }
 const serviceChip = x => `<span class="chip ${x}">${esc(x)}</span>`;
 const esc = x => String(x ?? "").replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
@@ -163,31 +164,82 @@ function resourceText(host) {
 }
 function filteredResults() {
   const q = $("#hostSearch").value.toLowerCase(), site = $("#siteFilter").value, service = $("#serviceFilter").value;
-  return (state.job?.results || []).filter(h => (!site || h.site === site) && (!service || h.services.includes(service)) && (!q || [h.hostname,h.ip,h.site,h.vlan,h.os_family,h.os_version].join(" ").toLowerCase().includes(q)));
+  return (state.job?.results || []).filter(h => (!site || h.site === site) && (!service || h.services.includes(service)) && (!q || [h.hostname,h.ip,h.role,h.site,h.vlan,h.os_family,h.os_version].join(" ").toLowerCase().includes(q)));
 }
 function renderTable() {
   const rows = filteredResults(); $("#resultCount").textContent = `${rows.length} host${rows.length === 1 ? "" : "s"}`;
-  $("#hostTable").innerHTML = rows.length ? rows.map(h => `<tr tabindex="0" data-host="${esc(h.ip)}"><td><strong>${esc(h.hostname || "Unresolved")}</strong><small>${esc(h.ip)}</small></td><td><strong>${esc(h.site)}</strong><small>${esc(h.vlan)} · ${esc(h.cidr)}</small></td><td><div class="service-chips">${h.services.map(serviceChip).join("")}</div></td><td><strong>${esc(h.os_version || h.os_family)}</strong><small>${esc(h.os_evidence)}</small></td><td><small>${esc(resourceText(h))}</small></td><td><div class="confidence"><i style="--c:${h.os_confidence || 0}%"></i><span>${h.os_confidence || 0}%</span></div></td><td><span class="row-open">↗</span></td></tr>`).join("") : '<tr><td colspan="7" class="table-empty">No hosts match the current filters.</td></tr>';
+  $("#hostTable").innerHTML = rows.length ? rows.map(h => `<tr tabindex="0" data-host="${esc(h.ip)}" data-site="${esc(h.site)}"><td><strong>${esc(h.hostname || "Unresolved")}</strong><small>${esc(h.ip)}</small></td><td><span class="role-pill">${esc(h.role || "Network Endpoint")}</span></td><td><strong>${esc(h.site)}</strong><small>${esc(h.vlan)} · ${esc(h.cidr)}</small></td><td><div class="service-chips">${h.services.map(serviceChip).join("")}</div></td><td><strong>${esc(h.os_version || h.os_family)}</strong><small>${esc(h.os_evidence)}</small></td><td><small>${esc(resourceText(h))}</small></td><td><div class="confidence"><i style="--c:${h.os_confidence || 0}%"></i><span>${h.os_confidence || 0}%</span></div></td><td><span class="row-open">↗</span></td></tr>`).join("") : '<tr><td colspan="8" class="table-empty">No hosts match the current filters.</td></tr>';
   $$('[data-host]').forEach(row => {
-    row.addEventListener("click", () => openHost(row.dataset.host));
+    row.addEventListener("click", () => openHost(row.dataset.host, row.dataset.site));
     row.addEventListener("keydown", event => {
-      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openHost(row.dataset.host); }
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openHost(row.dataset.host, row.dataset.site); }
     });
   });
 }
 
-function openHost(ip) {
-  const host = (state.job?.results || []).find(item => item.ip === ip);
+function openHost(ip, site) {
+  const host = (state.job?.results || []).find(item => item.ip === ip && (!site || item.site === site));
   if (!host) return;
+  showHost(host);
+}
+
+function showHost(host, remembered = false) {
   const links = [];
   if (host.services.includes("HTTP")) links.push(`<a class="detail-link" href="http://${esc(host.ip)}" target="_blank" rel="noreferrer">Open HTTP ↗</a>`);
   if (host.services.includes("HTTPS")) links.push(`<a class="detail-link" href="https://${esc(host.ip)}" target="_blank" rel="noreferrer">Open HTTPS ↗</a>`);
   const resources = Object.entries(host.resources || {}).map(([key, value]) => `<div class="detail-stat"><small>${esc(key.replaceAll("_", " "))}</small><strong>${esc(value)}</strong></div>`).join("");
-  $("#hostDetail").innerHTML = `<div class="host-detail-hero"><p class="eyebrow">${esc(host.site)} · ${esc(host.vlan)}</p><h2>${esc(host.hostname || "Hostname unresolved")}</h2><p>${esc(host.ip)} · ${esc(host.cidr)}</p></div><div class="host-detail-body"><div class="detail-grid"><div class="detail-stat"><small>Operating system</small><strong>${esc(host.os_version || host.os_family)}</strong></div><div class="detail-stat"><small>OS evidence</small><strong>${esc(host.os_evidence)} · ${host.os_confidence || 0}%</strong></div><div class="detail-stat"><small>Hostname source</small><strong>${esc(host.hostname_source || "Unresolved")}</strong></div><div class="detail-stat"><small>Resource status</small><strong>${esc(host.resource_status || "Not collected")}</strong></div></div><div class="detail-section"><h4>Verified connection paths</h4><div class="service-chips">${host.services.map(serviceChip).join("")}</div></div>${resources ? `<div class="detail-section"><h4>Observed resources</h4><div class="detail-grid">${resources}</div></div>` : ""}${links.length ? `<div class="detail-section"><h4>Web consoles</h4><div class="detail-links">${links.join("")}</div></div>` : ""}</div>`;
+  const memory = remembered ? `<div class="detail-stat"><small>First seen</small><strong>${esc(new Date(host.first_seen).toLocaleString())}</strong></div><div class="detail-stat"><small>Last seen</small><strong>${esc(new Date(host.last_seen).toLocaleString())} · ${host.seen_count} scans</strong></div>` : "";
+  $("#hostDetail").innerHTML = `<div class="host-detail-hero"><p class="eyebrow">${esc(host.site)} · ${esc(host.vlan)}</p><h2>${esc(host.hostname || "Hostname unresolved")}</h2><p>${esc(host.ip)} · ${esc(host.cidr)}</p><span class="detail-role">${esc(host.role || "Network Endpoint")}</span></div><div class="host-detail-body"><div class="detail-grid"><div class="detail-stat"><small>Role</small><strong>${esc(host.role || "Network Endpoint")}</strong></div><div class="detail-stat"><small>Operating system</small><strong>${esc(host.os_version || host.os_family)}</strong></div><div class="detail-stat"><small>OS evidence</small><strong>${esc(host.os_evidence)} · ${host.os_confidence || 0}%</strong></div><div class="detail-stat"><small>Hostname source</small><strong>${esc(host.hostname_source || "Resolved")}</strong></div><div class="detail-stat"><small>Resource status</small><strong>${esc(host.resource_status || "Not collected")}</strong></div>${memory}</div><div class="detail-section"><h4>Verified connection paths</h4><div class="service-chips">${host.services.map(serviceChip).join("")}</div></div>${resources ? `<div class="detail-section"><h4>Observed resources</h4><div class="detail-grid">${resources}</div></div>` : ""}${links.length ? `<div class="detail-section"><h4>Web consoles</h4><div class="detail-links">${links.join("")}</div></div>` : ""}</div>`;
   $("#hostDialog").showModal();
 }
 [$("#hostSearch"), $("#siteFilter"), $("#serviceFilter")].forEach(x => x.addEventListener("input", renderTable));
 function updateSites() { const current = $("#siteFilter").value, sites = [...new Set((state.job?.results || []).map(x => x.site))].sort(); $("#siteFilter").innerHTML = '<option value="">All sites</option>' + sites.map(x => `<option>${esc(x)}</option>`).join(""); $("#siteFilter").value = current; }
+
+function filteredRemembered() {
+  const q = $("#rememberedSearch").value.toLowerCase(), site = $("#rememberedSiteFilter").value;
+  return state.remembered.filter(h => (!site || h.site === site) && (!q || [h.hostname,h.ip,h.role,h.site,h.vlan,h.os_family,h.os_version].join(" ").toLowerCase().includes(q)));
+}
+
+function updateRememberedSites() {
+  const select = $("#rememberedSiteFilter"), current = select.value;
+  const sites = [...new Set(state.remembered.map(host => host.site))].sort();
+  select.innerHTML = '<option value="">All sites</option>' + sites.map(site => `<option>${esc(site)}</option>`).join("");
+  select.value = current;
+}
+
+function renderRemembered() {
+  const rows = filteredRemembered();
+  $("#navRememberedCount").textContent = state.remembered.length;
+  $("#rememberedCount").textContent = `${rows.length} remembered host${rows.length === 1 ? "" : "s"}`;
+  $("#rememberedTable").innerHTML = rows.length ? rows.map(host => {
+    const index = state.remembered.indexOf(host), seen = new Date(host.last_seen);
+    return `<tr tabindex="0" data-remembered-index="${index}"><td><strong>${esc(host.hostname)}</strong><small>${esc(host.ip)}</small></td><td><div class="role-editor"><input data-role-input value="${esc(host.role)}" maxlength="80" aria-label="Role for ${esc(host.hostname)}"><button data-role-save type="button">Save</button></div>${host.role_locked ? '<small class="manual-role">Manual role</small>' : '<small>Auto-detected role</small>'}</td><td><strong>${esc(host.site)}</strong><small>${esc(host.vlan)} · ${esc(host.cidr)}</small></td><td><div class="service-chips">${(host.services || []).map(serviceChip).join("")}</div></td><td><strong>${esc(host.os_version || host.os_family)}</strong><small>${esc(host.os_evidence)}</small></td><td><small>${esc(resourceText(host))}</small></td><td><strong>${esc(seen.toLocaleDateString())}</strong><small>${esc(seen.toLocaleTimeString())}</small></td><td><span class="seen-count">${host.seen_count}</span></td><td><span class="row-open">↗</span></td></tr>`;
+  }).join("") : '<tr><td colspan="9" class="table-empty">No resolved hosts match the current filters.</td></tr>';
+  $$('[data-remembered-index]').forEach(row => {
+    row.addEventListener("click", event => { if (!event.target.closest("input,button")) showHost(state.remembered[Number(row.dataset.rememberedIndex)], true); });
+    row.addEventListener("keydown", event => { if ((event.key === "Enter" || event.key === " ") && !event.target.closest("input,button")) { event.preventDefault(); showHost(state.remembered[Number(row.dataset.rememberedIndex)], true); } });
+  });
+  $$('[data-role-save]').forEach(button => button.addEventListener("click", async event => {
+    event.stopPropagation();
+    const row = button.closest("tr"), host = state.remembered[Number(row.dataset.rememberedIndex)];
+    const role = row.querySelector("[data-role-input]").value.trim();
+    if (!role) { toast("Role name cannot be empty."); return; }
+    button.disabled = true;
+    try {
+      const updated = await api("/api/remembered-hosts/role", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({site:host.site, ip:host.ip, role})});
+      Object.assign(host, updated); renderRemembered(); toast(`Saved role for ${host.hostname}.`);
+    } catch (error) { button.disabled = false; toast(error.message); }
+  }));
+  $$('[data-role-input]').forEach(input => input.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); input.closest("tr").querySelector("[data-role-save]").click(); } }));
+}
+
+async function loadRemembered() {
+  try {
+    state.remembered = await api("/api/remembered-hosts");
+    updateRememberedSites(); renderRemembered();
+  } catch (error) { toast(`Remembered hosts unavailable: ${error.message}`); }
+}
+[$("#rememberedSearch"), $("#rememberedSiteFilter")].forEach(x => x.addEventListener("input", renderRemembered));
 
 $("#cancelButton").addEventListener("click", async () => { if (state.job) { await api(`/api/scans/${state.job.id}/cancel`, {method:"POST"}); toast("Stopping after current checks finish…"); } });
 $("#exportButton").addEventListener("click", () => {
