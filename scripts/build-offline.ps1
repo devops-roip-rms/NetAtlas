@@ -1,5 +1,5 @@
 param(
-    [string]$Tag = "netatlas:1.2.2",
+    [string]$Tag = "netatlas:1.2.3",
     [ValidateSet("linux/amd64", "linux/arm64")]
     [string]$Platform = "linux/amd64"
 )
@@ -8,14 +8,14 @@ $ErrorActionPreference = "Stop"
 $appRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $distPath = Join-Path $appRoot "dist"
 $safePlatform = $Platform.Replace("/", "-")
-$archive = Join-Path $distPath "netatlas-1.2.2-$safePlatform.tar"
+$archive = Join-Path $distPath "netatlas-1.2.3-$safePlatform.tar"
 
 Set-Location -LiteralPath $appRoot
 docker info | Out-Null
 New-Item -ItemType Directory -Path $distPath -Force | Out-Null
 
 Write-Host "Building $Tag for $Platform..." -ForegroundColor Cyan
-docker build --platform $Platform --build-arg APP_VERSION=1.2.2 --tag $Tag .
+docker build --platform $Platform --build-arg APP_VERSION=1.2.3 --tag $Tag .
 if ($LASTEXITCODE -ne 0) { throw "Docker build failed." }
 
 Write-Host "Saving offline image..." -ForegroundColor Cyan

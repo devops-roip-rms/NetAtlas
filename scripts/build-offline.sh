@@ -1,16 +1,16 @@
 #!/usr/bin/env sh
 set -eu
 
-TAG="${1:-netatlas:1.2.2}"
+TAG="${1:-netatlas:1.2.3}"
 PLATFORM="${2:-linux/amd64}"
 APP_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 DIST="$APP_ROOT/dist"
 SAFE_PLATFORM=$(printf '%s' "$PLATFORM" | tr '/' '-')
-ARCHIVE="$DIST/netatlas-1.2.2-$SAFE_PLATFORM.tar"
+ARCHIVE="$DIST/netatlas-1.2.3-$SAFE_PLATFORM.tar"
 
 docker info >/dev/null
 mkdir -p "$DIST"
-docker build --platform "$PLATFORM" --build-arg APP_VERSION=1.2.2 --tag "$TAG" "$APP_ROOT"
+docker build --platform "$PLATFORM" --build-arg APP_VERSION=1.2.3 --tag "$TAG" "$APP_ROOT"
 docker save --output "$ARCHIVE" "$TAG"
 (cd "$DIST" && sha256sum "$(basename "$ARCHIVE")" > "$(basename "$ARCHIVE").sha256")
 cp "$APP_ROOT/scripts/load-and-run-airgap.ps1" "$DIST/"
