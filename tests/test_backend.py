@@ -63,6 +63,24 @@ class NetAtlasTests(unittest.TestCase):
         self.assertIn("win01 - SSH=#109#0%192.0.2.41%22%DOMAIN\\winops", text)
         self.assertIn("win01 - RDP=#91#4%192.0.2.41%3389%DOMAIN\\rdpops", text)
 
+    def test_selected_only_exports(self):
+        linux = {"site": "HQ", "vlan": "Linux", "cidr": "192.0.2.0/24", "ip": "192.0.2.60", "hostname": "rhel01", "hostname_source": "DNS", "role": "Application Server", "services": ["SSH"], "open_ports": [22], "web": [], "os_family": "Linux", "os_version": "RHEL 9.6", "os_confidence": 100, "os_evidence": "SSH", "resource_status": "Collected", "resources": {"cpu_cores": "4"}}
+        windows = {"site": "HQ", "vlan": "Windows", "cidr": "192.0.2.0/24", "ip": "192.0.2.61", "hostname": "win01", "hostname_source": "DNS", "role": "Windows Server", "services": ["SSH", "RDP"], "open_ports": [22, 3389], "web": [], "os_family": "Windows", "os_version": "Windows Server 2022", "os_confidence": 100, "os_evidence": "SSH", "resource_status": "Collected", "resources": {"cpu_cores": "8"}}
+        job = backend.ScanJob(id="selected", config={}, results=[linux, windows], status="complete")
+        selected = backend.selected_export_hosts(job, [{"site": "HQ", "ip": "192.0.2.60"}])
+        self.assertEqual([host["hostname"] for host in selected], ["rhel01"])
+        moba = backend.export_mobaxterm(job, "ops", hosts=selected).decode("cp1252")
+        inventory = backend.export_inventory_csv(job, selected).decode("utf-8-sig")
+        self.assertIn("rhel01", moba)
+        self.assertNotIn("win01", moba)
+        self.assertIn("rhel01", inventory)
+        self.assertNotIn("win01", inventory)
+
+    def test_selected_export_rejects_empty_selection(self):
+        job = backend.ScanJob(id="selected", config={}, results=[], status="complete")
+        with self.assertRaisesRegex(ValueError, "Select at least one host"):
+            backend.selected_export_hosts(job, [])
+
     def test_windows_profile_is_tried_first_for_windows(self):
         host = {"ip": "192.0.2.50", "open_ports": [22], "os_family": "Windows", "ssh_banner": ""}
         calls = []
