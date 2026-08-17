@@ -22,7 +22,6 @@
           <div class="status-row"><span class="pulse" id="backendPulse"></span><strong id="backendLabel">Connecting</strong></div>
           <p id="capabilities">Checking local scanner…</p>
         </div>
-        <p class="privacy">Runs on this computer.<br>Your inventory never leaves it.</p>
       </div>
     </aside>
 
@@ -61,12 +60,6 @@
           </div>
         </div>
 
-        <div class="trust-rail" aria-label="Deployment capabilities">
-          <div><span class="trust-icon">◇</span><p><strong>Air-gap native</strong><small>No external calls or assets</small></p></div>
-          <div><span class="trust-icon">⇄</span><p><strong>Dual-protocol Windows</strong><small>SSH and RDP tracked separately</small></p></div>
-          <div><span class="trust-icon">↧</span><p><strong>Connection-ready</strong><small>One organized MobaXterm library</small></p></div>
-        </div>
-
         <div class="metrics" aria-label="Inventory summary">
           <article><span class="metric-icon green">⌁</span><div><p>Reachable hosts</p><strong id="metricHosts">0</strong><small id="metricHostsDetail">No scan yet</small></div></article>
           <article><span class="metric-icon blue">›_</span><div><p>SSH ready</p><strong id="metricSsh">0</strong><small>Port 22 verified</small></div></article>
@@ -89,7 +82,6 @@
                 <p><i class="unknown"></i>Unknown / other <b id="osUnknown">0</b></p>
               </div>
             </div>
-            <div class="insight" id="osInsight"><span>i</span><p>OS results improve when Nmap deep inspection or authenticated resource collection is enabled.</p></div>
           </section>
         </div>
       </section>
@@ -97,19 +89,23 @@
       <section class="view" id="resultsView">
         <div class="section-heading">
           <div><p class="eyebrow">DISCOVERED ENDPOINTS</p><h2>Host inventory</h2><p>Only endpoints with verified SSH, RDP, HTTP or HTTPS are listed.</p></div>
-          <div class="section-actions"><button class="button ghost" id="inventoryButton" disabled>Download inventory CSV</button><button class="button primary" id="exportButton" disabled>Export MobaXterm</button></div>
+          <div class="section-actions"><button class="button ghost" id="inventoryButton" disabled>CSV selected</button><button class="button primary" id="exportButton" disabled>Export selected</button></div>
         </div>
         <div class="table-panel">
           <div class="table-tools">
-            <label class="search"><span>⌕</span><input id="hostSearch" type="search" placeholder="Search hostname, IP, VLAN or OS…"></label>
-            <select id="siteFilter" aria-label="Filter by site"><option value="">All sites</option></select>
-            <select id="serviceFilter" aria-label="Filter by service"><option value="">All services</option><option>SSH</option><option>RDP</option><option>HTTP</option><option>HTTPS</option></select>
+            <label class="search"><span>⌕</span><input id="hostSearch" type="search" placeholder="Search all columns…"></label>
+            <button class="button ghost compact" id="selectVisibleButton" type="button">Select visible</button>
+            <button class="button ghost compact" id="clearSelectionButton" type="button" disabled>Clear selection</button>
+            <strong class="selection-count" id="selectionCount">0 selected</strong>
             <span id="resultCount">0 hosts</span>
           </div>
           <div class="table-scroll">
-            <table>
-              <thead><tr><th>Endpoint</th><th>Role</th><th>Site / VLAN</th><th>Services</th><th>Operating system</th><th>Resources</th><th>Confidence</th><th></th></tr></thead>
-              <tbody id="hostTable"><tr><td colspan="8" class="table-empty">Run a scan to populate the inventory.</td></tr></tbody>
+            <table class="inventory-table">
+              <thead>
+                <tr class="sort-row"><th class="select-cell"><input id="selectVisible" type="checkbox" aria-label="Select all visible hosts"></th><th><button data-host-sort="endpoint">Endpoint</button></th><th><button data-host-sort="role">Role</button></th><th><button data-host-sort="location">Site / VLAN</button></th><th><button data-host-sort="services">Services</button></th><th><button data-host-sort="os">Operating system</button></th><th><button data-host-sort="resources">Resources</button></th><th><button data-host-sort="confidence">Confidence</button></th><th></th></tr>
+                <tr class="filter-row"><th></th><th><input data-host-filter="endpoint" placeholder="Filter endpoint" aria-label="Filter endpoint column"></th><th><input data-host-filter="role" placeholder="Filter role" aria-label="Filter role column"></th><th><input data-host-filter="location" placeholder="Filter site or VLAN" aria-label="Filter site or VLAN column"></th><th><input data-host-filter="services" placeholder="Filter services" aria-label="Filter services column"></th><th><input data-host-filter="os" placeholder="Filter OS" aria-label="Filter operating system column"></th><th><input data-host-filter="resources" placeholder="Filter resources" aria-label="Filter resources column"></th><th><input data-host-filter="confidence" placeholder="Filter confidence" aria-label="Filter confidence column"></th><th></th></tr>
+              </thead>
+              <tbody id="hostTable"><tr><td colspan="9" class="table-empty">Run a scan to populate the inventory.</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -122,13 +118,15 @@
         </div>
         <div class="table-panel remembered-panel">
           <div class="table-tools">
-            <label class="search"><span>⌕</span><input id="rememberedSearch" type="search" placeholder="Search hostname, IP, role, VLAN or OS…"></label>
-            <select id="rememberedSiteFilter" aria-label="Filter remembered hosts by site"><option value="">All sites</option></select>
+            <label class="search"><span>⌕</span><input id="rememberedSearch" type="search" placeholder="Search all columns…"></label>
             <span id="rememberedCount">0 remembered hosts</span>
           </div>
           <div class="table-scroll">
             <table class="remembered-table">
-              <thead><tr><th>Endpoint</th><th>Role name</th><th>Site / VLAN</th><th>Services</th><th>Operating system</th><th>Resources</th><th>Last seen</th><th>Seen</th><th></th></tr></thead>
+              <thead>
+                <tr class="sort-row"><th><button data-remembered-sort="endpoint">Endpoint</button></th><th><button data-remembered-sort="role">Role name</button></th><th><button data-remembered-sort="location">Site / VLAN</button></th><th><button data-remembered-sort="services">Services</button></th><th><button data-remembered-sort="os">Operating system</button></th><th><button data-remembered-sort="resources">Resources</button></th><th><button data-remembered-sort="last_seen">Last seen</button></th><th><button data-remembered-sort="seen_count">Seen</button></th><th></th></tr>
+                <tr class="filter-row"><th><input data-remembered-filter="endpoint" placeholder="Filter endpoint" aria-label="Filter remembered endpoint column"></th><th><input data-remembered-filter="role" placeholder="Filter role" aria-label="Filter remembered role column"></th><th><input data-remembered-filter="location" placeholder="Filter site or VLAN" aria-label="Filter remembered site or VLAN column"></th><th><input data-remembered-filter="services" placeholder="Filter services" aria-label="Filter remembered services column"></th><th><input data-remembered-filter="os" placeholder="Filter OS" aria-label="Filter remembered operating system column"></th><th><input data-remembered-filter="resources" placeholder="Filter resources" aria-label="Filter remembered resources column"></th><th><input data-remembered-filter="last_seen" placeholder="Filter last seen" aria-label="Filter last seen column"></th><th><input data-remembered-filter="seen_count" placeholder="Filter count" aria-label="Filter seen count column"></th><th></th></tr>
+              </thead>
               <tbody id="rememberedTable"><tr><td colspan="9" class="table-empty">Resolved hosts will appear here after a scan.</td></tr></tbody>
             </table>
           </div>
@@ -178,7 +176,7 @@
       <button class="dialog-close" value="cancel" aria-label="Close">×</button>
       <span class="dialog-icon">M</span>
       <p class="eyebrow">SESSION EXPORT</p><h2>Build MobaXterm library</h2>
-      <p>Creates Windows and Linux folder trees. Windows hosts receive SSH and RDP sessions; Linux hosts receive SSH only. HTTP/HTTPS remain inventory-only.</p>
+      <p id="exportSelectionSummary">Creates sessions for the selected hosts only. Windows hosts receive SSH and RDP sessions; Linux hosts receive SSH only.</p>
       <div class="dialog-fields">
         <label>Linux SSH username <span>(optional)</span><input id="exportLinuxSshUser" placeholder="root or admin"></label>
         <label>Windows SSH username <span>(optional)</span><input id="exportWindowsSshUser" placeholder="DOMAIN\user"></label>

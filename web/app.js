@@ -1,6 +1,10 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
-const state = { health: null, jobs: [], job: null, timer: null, remembered: [] };
+const state = {
+  health: null, jobs: [], job: null, timer: null, remembered: [], selected: new Set(), selectionJobId: null,
+  hostTable: {sortKey: "endpoint", sortDir: "asc", filters: {}},
+  rememberedTable: {sortKey: "last_seen", sortDir: "desc", filters: {}}
+};
 const savedTheme = localStorage.getItem("netatlas-theme");
 if (savedTheme) document.documentElement.dataset.theme = savedTheme;
 $("#themeButton").addEventListener("click", () => {
@@ -130,12 +134,13 @@ function finishHero(job) {
   $("#progressPanel").classList.add("hidden"); $("#heroScanButton").classList.remove("hidden"); $("#addressEstimate").classList.remove("hidden");
   if (job.status === "complete") {
     $("#heroPill").innerHTML = "<i></i> INVENTORY CURRENT"; $("#heroTitle").innerHTML = `Discovery complete.<br><em>${job.summary.hosts} endpoints are ready.</em>`;
-    $("#heroText").textContent = "Review the evidence, filter the host inventory, or export all verified connections into MobaXterm."; $("#heroScanButton").textContent = "Run another scan →";
+    $("#heroText").textContent = "Review the evidence, filter any column, select the hosts you need, and export only those connections."; $("#heroScanButton").textContent = "Run another scan →";
   } else { $("#heroPill").textContent = job.status.toUpperCase(); $("#heroTitle").innerHTML = "Scan stopped.<br><em>Your partial results are safe.</em>"; }
 }
 
 function render(job) {
   const s = job.summary || {}; const p = job.progress || 0;
+  if (state.selectionJobId !== job.id) { state.selected.clear(); state.selectionJobId = job.id; }
   $("#progressPercent").textContent = `${Math.round(p)}%`; $("#progressBar").style.width = `${p}%`; $("#progressPhase").textContent = job.current_phase;
   $("#progressChecked").textContent = (job.completed || 0).toLocaleString(); $("#progressFound").textContent = (s.hosts || 0).toLocaleString();
   $("#metricHosts").textContent = s.hosts || 0; $("#metricSsh").textContent = s.ssh || 0; $("#metricRdp").textContent = s.rdp || 0; $("#metricWeb").textContent = s.web || 0;
@@ -143,8 +148,9 @@ function render(job) {
   $("#navHostCount").textContent = s.hosts || 0; $("#osWindows").textContent = s.windows || 0; $("#osLinux").textContent = s.linux || 0; $("#osUnknown").textContent = s.unknown || 0; $("#donutTotal").textContent = s.hosts || 0;
   const total = Math.max(s.hosts || 0, 1), win = (s.windows || 0) / total * 100, lin = win + (s.linux || 0) / total * 100;
   $("#osDonut").style.setProperty("--win", `${win}%`); $("#osDonut").style.setProperty("--lin", `${lin}%`);
-  $("#exportButton").disabled = !(job.results || []).length; renderRecent(job.results || []); renderTable(); updateSites();
-  $("#inventoryButton").disabled = !(job.results || []).length;
+  const validKeys = new Set((job.results || []).map(hostKey));
+  state.selected = new Set([...state.selected].filter(key => validKeys.has(key)));
+  renderRecent(job.results || []); renderTable();
   if (["complete","failed","cancelled"].includes(job.status)) finishHero(job);
 }
 
@@ -162,19 +168,83 @@ function resourceText(host) {
   if (r.disk_root_gb) parts.push(`${r.disk_root_gb} GB root used/total`); if (r.disk_c_gb) parts.push(`${r.disk_c_gb} GB C:`);
   return parts.length ? parts.join(" · ") : (host.resource_status || "Credentials not supplied");
 }
-function filteredResults() {
-  const q = $("#hostSearch").value.toLowerCase(), site = $("#siteFilter").value, service = $("#serviceFilter").value;
-  return (state.job?.results || []).filter(h => (!site || h.site === site) && (!service || h.services.includes(service)) && (!q || [h.hostname,h.ip,h.role,h.site,h.vlan,h.os_family,h.os_version].join(" ").toLowerCase().includes(q)));
+const collator = new Intl.Collator(undefined, {numeric: true, sensitivity: "base"});
+const hostKey = host => `${host.site || ""}␟${host.ip || ""}`;
+
+function hostColumnValue(host, key, raw = false) {
+  const values = {
+    endpoint: `${host.hostname || "Unresolved"} ${host.ip || ""}`,
+    role: host.role || "Network Endpoint",
+    location: `${host.site || ""} ${host.vlan || ""} ${host.cidr || ""}`,
+    services: (host.services || []).join(" "),
+    os: `${host.os_version || ""} ${host.os_family || ""} ${host.os_evidence || ""}`,
+    resources: resourceText(host),
+    confidence: raw ? Number(host.os_confidence || 0) : `${host.os_confidence || 0}%`
+  };
+  return values[key] ?? "";
 }
+
+function tableRows(rows, view, valueFor, globalQuery = "") {
+  const query = globalQuery.trim().toLowerCase();
+  const filtered = rows.filter(host => {
+    if (query && !Object.keys(view.filters).concat(["endpoint", "role", "location", "services", "os", "resources", "confidence", "last_seen", "seen_count"])
+      .some((key, index, all) => all.indexOf(key) === index && String(valueFor(host, key)).toLowerCase().includes(query))) return false;
+    return Object.entries(view.filters).every(([key, value]) => !value || String(valueFor(host, key)).toLowerCase().includes(value.toLowerCase()));
+  });
+  return filtered.map((host, index) => ({host, index})).sort((left, right) => {
+    const a = valueFor(left.host, view.sortKey, true), b = valueFor(right.host, view.sortKey, true);
+    const compared = typeof a === "number" && typeof b === "number" ? a - b : collator.compare(String(a), String(b));
+    return (compared || left.index - right.index) * (view.sortDir === "asc" ? 1 : -1);
+  }).map(item => item.host);
+}
+
+function filteredResults() {
+  return tableRows(state.job?.results || [], state.hostTable, hostColumnValue, $("#hostSearch").value);
+}
+
+function selectedResults() {
+  return (state.job?.results || []).filter(host => state.selected.has(hostKey(host)));
+}
+
+function updateSortButtons(selector, view) {
+  $$(selector).forEach(button => {
+    const active = button.dataset.hostSort === view.sortKey || button.dataset.rememberedSort === view.sortKey;
+    button.classList.toggle("sort-active", active);
+    button.dataset.direction = active ? view.sortDir : "";
+  });
+}
+
+function updateSelectionControls(rows) {
+  const visibleKeys = rows.map(hostKey), selectedCount = selectedResults().length;
+  const selectedVisible = visibleKeys.filter(key => state.selected.has(key)).length;
+  const selectAll = $("#selectVisible");
+  selectAll.checked = visibleKeys.length > 0 && selectedVisible === visibleKeys.length;
+  selectAll.indeterminate = selectedVisible > 0 && selectedVisible < visibleKeys.length;
+  selectAll.disabled = !visibleKeys.length;
+  $("#selectionCount").textContent = `${selectedCount} selected`;
+  $("#clearSelectionButton").disabled = selectedCount === 0;
+  $("#inventoryButton").disabled = selectedCount === 0;
+  $("#exportButton").disabled = selectedCount === 0;
+  $("#inventoryButton").textContent = selectedCount ? `CSV selected (${selectedCount})` : "CSV selected";
+  $("#exportButton").textContent = selectedCount ? `Export selected (${selectedCount})` : "Export selected";
+}
+
 function renderTable() {
   const rows = filteredResults(); $("#resultCount").textContent = `${rows.length} host${rows.length === 1 ? "" : "s"}`;
-  $("#hostTable").innerHTML = rows.length ? rows.map(h => `<tr tabindex="0" data-host="${esc(h.ip)}" data-site="${esc(h.site)}"><td><strong>${esc(h.hostname || "Unresolved")}</strong><small>${esc(h.ip)}</small></td><td><span class="role-pill">${esc(h.role || "Network Endpoint")}</span></td><td><strong>${esc(h.site)}</strong><small>${esc(h.vlan)} · ${esc(h.cidr)}</small></td><td><div class="service-chips">${h.services.map(serviceChip).join("")}</div></td><td><strong>${esc(h.os_version || h.os_family)}</strong><small>${esc(h.os_evidence)}</small></td><td><small>${esc(resourceText(h))}</small></td><td><div class="confidence"><i style="--c:${h.os_confidence || 0}%"></i><span>${h.os_confidence || 0}%</span></div></td><td><span class="row-open">↗</span></td></tr>`).join("") : '<tr><td colspan="8" class="table-empty">No hosts match the current filters.</td></tr>';
+  $("#hostTable").innerHTML = rows.length ? rows.map(h => `<tr tabindex="0" data-host="${esc(h.ip)}" data-site="${esc(h.site)}"><td class="select-cell"><input type="checkbox" data-host-select="${esc(hostKey(h))}" aria-label="Select ${esc(h.hostname || h.ip)}" ${state.selected.has(hostKey(h)) ? "checked" : ""}></td><td><strong>${esc(h.hostname || "Unresolved")}</strong><small>${esc(h.ip)}</small></td><td><span class="role-pill">${esc(h.role || "Network Endpoint")}</span></td><td><strong>${esc(h.site)}</strong><small>${esc(h.vlan)} · ${esc(h.cidr)}</small></td><td><div class="service-chips">${(h.services || []).map(serviceChip).join("")}</div></td><td><strong>${esc(h.os_version || h.os_family)}</strong><small>${esc(h.os_evidence)}</small></td><td><small>${esc(resourceText(h))}</small></td><td><div class="confidence"><i style="--c:${h.os_confidence || 0}%"></i><span>${h.os_confidence || 0}%</span></div></td><td><span class="row-open">↗</span></td></tr>`).join("") : '<tr><td colspan="9" class="table-empty">No hosts match the current filters.</td></tr>';
   $$('[data-host]').forEach(row => {
-    row.addEventListener("click", () => openHost(row.dataset.host, row.dataset.site));
+    row.addEventListener("click", event => { if (!event.target.closest('input,button')) openHost(row.dataset.host, row.dataset.site); });
     row.addEventListener("keydown", event => {
-      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openHost(row.dataset.host, row.dataset.site); }
+      if ((event.key === "Enter" || event.key === " ") && !event.target.closest('input,button')) { event.preventDefault(); openHost(row.dataset.host, row.dataset.site); }
     });
   });
+  $$('[data-host-select]').forEach(input => input.addEventListener("change", event => {
+    event.stopPropagation();
+    if (input.checked) state.selected.add(input.dataset.hostSelect); else state.selected.delete(input.dataset.hostSelect);
+    updateSelectionControls(rows);
+  }));
+  updateSortButtons("[data-host-sort]", state.hostTable);
+  updateSelectionControls(rows);
 }
 
 function openHost(ip, site) {
@@ -192,19 +262,29 @@ function showHost(host, remembered = false) {
   $("#hostDetail").innerHTML = `<div class="host-detail-hero"><p class="eyebrow">${esc(host.site)} · ${esc(host.vlan)}</p><h2>${esc(host.hostname || "Hostname unresolved")}</h2><p>${esc(host.ip)} · ${esc(host.cidr)}</p><span class="detail-role">${esc(host.role || "Network Endpoint")}</span></div><div class="host-detail-body"><div class="detail-grid"><div class="detail-stat"><small>Role</small><strong>${esc(host.role || "Network Endpoint")}</strong></div><div class="detail-stat"><small>Operating system</small><strong>${esc(host.os_version || host.os_family)}</strong></div><div class="detail-stat"><small>OS evidence</small><strong>${esc(host.os_evidence)} · ${host.os_confidence || 0}%</strong></div><div class="detail-stat"><small>Hostname source</small><strong>${esc(host.hostname_source || "Resolved")}</strong></div><div class="detail-stat"><small>Resource status</small><strong>${esc(host.resource_status || "Not collected")}</strong></div>${memory}</div><div class="detail-section"><h4>Verified connection paths</h4><div class="service-chips">${host.services.map(serviceChip).join("")}</div></div>${resources ? `<div class="detail-section"><h4>Observed resources</h4><div class="detail-grid">${resources}</div></div>` : ""}${links.length ? `<div class="detail-section"><h4>Web consoles</h4><div class="detail-links">${links.join("")}</div></div>` : ""}</div>`;
   $("#hostDialog").showModal();
 }
-[$("#hostSearch"), $("#siteFilter"), $("#serviceFilter")].forEach(x => x.addEventListener("input", renderTable));
-function updateSites() { const current = $("#siteFilter").value, sites = [...new Set((state.job?.results || []).map(x => x.site))].sort(); $("#siteFilter").innerHTML = '<option value="">All sites</option>' + sites.map(x => `<option>${esc(x)}</option>`).join(""); $("#siteFilter").value = current; }
+$("#hostSearch").addEventListener("input", renderTable);
+$$('[data-host-filter]').forEach(input => input.addEventListener("input", () => { state.hostTable.filters[input.dataset.hostFilter] = input.value.trim(); renderTable(); }));
+$$('[data-host-sort]').forEach(button => button.addEventListener("click", () => {
+  const key = button.dataset.hostSort;
+  if (state.hostTable.sortKey === key) state.hostTable.sortDir = state.hostTable.sortDir === "asc" ? "desc" : "asc";
+  else { state.hostTable.sortKey = key; state.hostTable.sortDir = "asc"; }
+  renderTable();
+}));
+$("#selectVisible").addEventListener("change", event => {
+  filteredResults().forEach(host => event.target.checked ? state.selected.add(hostKey(host)) : state.selected.delete(hostKey(host)));
+  renderTable();
+});
+$("#selectVisibleButton").addEventListener("click", () => { filteredResults().forEach(host => state.selected.add(hostKey(host))); renderTable(); });
+$("#clearSelectionButton").addEventListener("click", () => { state.selected.clear(); renderTable(); });
 
 function filteredRemembered() {
-  const q = $("#rememberedSearch").value.toLowerCase(), site = $("#rememberedSiteFilter").value;
-  return state.remembered.filter(h => (!site || h.site === site) && (!q || [h.hostname,h.ip,h.role,h.site,h.vlan,h.os_family,h.os_version].join(" ").toLowerCase().includes(q)));
+  return tableRows(state.remembered, state.rememberedTable, rememberedColumnValue, $("#rememberedSearch").value);
 }
 
-function updateRememberedSites() {
-  const select = $("#rememberedSiteFilter"), current = select.value;
-  const sites = [...new Set(state.remembered.map(host => host.site))].sort();
-  select.innerHTML = '<option value="">All sites</option>' + sites.map(site => `<option>${esc(site)}</option>`).join("");
-  select.value = current;
+function rememberedColumnValue(host, key, raw = false) {
+  if (key === "last_seen") return raw ? Date.parse(host.last_seen || 0) : new Date(host.last_seen).toLocaleString();
+  if (key === "seen_count") return raw ? Number(host.seen_count || 0) : String(host.seen_count || 0);
+  return hostColumnValue(host, key, raw);
 }
 
 function renderRemembered() {
@@ -231,25 +311,52 @@ function renderRemembered() {
     } catch (error) { button.disabled = false; toast(error.message); }
   }));
   $$('[data-role-input]').forEach(input => input.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); input.closest("tr").querySelector("[data-role-save]").click(); } }));
+  updateSortButtons("[data-remembered-sort]", state.rememberedTable);
 }
 
 async function loadRemembered() {
   try {
     state.remembered = await api("/api/remembered-hosts");
-    updateRememberedSites(); renderRemembered();
+    renderRemembered();
   } catch (error) { toast(`Remembered hosts unavailable: ${error.message}`); }
 }
-[$("#rememberedSearch"), $("#rememberedSiteFilter")].forEach(x => x.addEventListener("input", renderRemembered));
+$("#rememberedSearch").addEventListener("input", renderRemembered);
+$$('[data-remembered-filter]').forEach(input => input.addEventListener("input", () => { state.rememberedTable.filters[input.dataset.rememberedFilter] = input.value.trim(); renderRemembered(); }));
+$$('[data-remembered-sort]').forEach(button => button.addEventListener("click", () => {
+  const key = button.dataset.rememberedSort;
+  if (state.rememberedTable.sortKey === key) state.rememberedTable.sortDir = state.rememberedTable.sortDir === "asc" ? "desc" : "asc";
+  else { state.rememberedTable.sortKey = key; state.rememberedTable.sortDir = "asc"; }
+  renderRemembered();
+}));
 
 $("#cancelButton").addEventListener("click", async () => { if (state.job) { await api(`/api/scans/${state.job.id}/cancel`, {method:"POST"}); toast("Stopping after current checks finish…"); } });
 $("#exportButton").addEventListener("click", () => {
+  const count = selectedResults().length;
+  if (!count) { toast("Select at least one host first."); return; }
   if (!$("#exportLinuxSshUser").value) $("#exportLinuxSshUser").value = state.job?.config?.linux_ssh_username || "";
   if (!$("#exportWindowsSshUser").value) $("#exportWindowsSshUser").value = state.job?.config?.windows_ssh_username || "";
+  $("#exportSelectionSummary").textContent = `Creates sessions for ${count} selected host${count === 1 ? "" : "s"} only. Windows receives SSH and RDP; Linux receives SSH.`;
   $("#exportDialog").showModal();
 });
-$("#inventoryButton").addEventListener("click", () => { if (state.job) window.location.href = `/api/scans/${state.job.id}/inventory.csv`; });
-function download(ext) { if (!state.job) return; const params = new URLSearchParams({linux_ssh_user:$("#exportLinuxSshUser").value, windows_ssh_user:$("#exportWindowsSshUser").value, rdp_user:$("#exportRdpUser").value}); window.location.href = `/api/scans/${state.job.id}/export.${ext}?${params}`; }
-$("#downloadMoba").addEventListener("click", () => download("mxtsessions")); $("#downloadCsv").addEventListener("click", () => download("csv"));
+async function downloadSelected(format) {
+  const hosts = selectedResults();
+  if (!state.job || !hosts.length) { toast("Select at least one host first."); return; }
+  try {
+    const response = await fetch(`/api/scans/${state.job.id}/export`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({
+      format, hosts: hosts.map(host => ({site:host.site, ip:host.ip})),
+      linux_ssh_user:$("#exportLinuxSshUser").value, windows_ssh_user:$("#exportWindowsSshUser").value, rdp_user:$("#exportRdpUser").value
+    })});
+    if (!response.ok) { const error = await response.json(); throw new Error(error.error || `Export failed (${response.status})`); }
+    const blob = await response.blob(), url = URL.createObjectURL(blob), link = document.createElement("a");
+    const disposition = response.headers.get("Content-Disposition") || "";
+    link.href = url; link.download = disposition.match(/filename="?([^";]+)"?/i)?.[1] || `NetAtlas-selected.${format === "inventory" ? "csv" : format}`;
+    document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast(`Exported ${hosts.length} selected host${hosts.length === 1 ? "" : "s"}.`);
+  } catch (error) { toast(error.message); }
+}
+$("#inventoryButton").addEventListener("click", () => downloadSelected("inventory"));
+$("#downloadMoba").addEventListener("click", () => downloadSelected("mxtsessions"));
+$("#downloadCsv").addEventListener("click", () => downloadSelected("csv"));
 
 async function loadHistory() {
   try { state.jobs = (await api("/api/scans")).sort((a,b) => b.created_at.localeCompare(a.created_at)); renderHistory(); if (!state.job && state.jobs.length) { state.job = state.jobs[0]; render(state.job); if (state.job.status === "running") { showRunning(state.job); state.timer = setInterval(poll, 900); } } } catch (_) {}
