@@ -5,7 +5,7 @@ ARCHIVE="${1:?Usage: load-and-run-airgap.sh IMAGE_TAR [PORT] [DATA_PATH] [BIND_A
 PORT="${2:-8765}"
 DATA_PATH="${3:-./netatlas-data}"
 BIND_ADDRESS="${4:-0.0.0.0}"
-TAG="netatlas:1.2.4"
+TAG="netatlas:1.2.5"
 
 if [ -f "$ARCHIVE.sha256" ]; then
   EXPECTED_HASH=$(tr -d '\r' < "$ARCHIVE.sha256" | awk 'NR == 1 { print $1 }')
