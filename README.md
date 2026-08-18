@@ -10,7 +10,7 @@ NetAtlas is a local multi-site IPv4 inventory scanner with a browser GUI. It che
 
 The basic scanner uses the Python standard library. For password-authenticated SSH enrichment when running directly on Windows, install `requirements.txt`; the Docker image already includes it. Scan history and the SQLite remembered-host inventory are stored locally under `data/`.
 
-The Hosts and Remembered Hosts tables support per-column filters and click-to-sort headers. Select the required rows in **Hosts** before downloading inventory CSV, compatibility CSV, or MobaXterm sessions; exports contain only the selected hosts.
+The Hosts and Remembered Hosts tables support per-column filters and click-to-sort headers. Select the required rows in **Hosts** before downloading inventory CSV, compatibility CSV, or MobaXterm sessions; exports contain only the selected hosts. Remembered hosts can be removed with an explicit confirmation prompt.
 
 ## Docker and air-gap deployment
 
@@ -30,7 +30,7 @@ sudo chown -R 10001:10001 ./netatlas-data
 sudo chmod 750 ./netatlas-data
 ```
 
-On an SELinux-enforcing host such as RHEL, also run `sudo chcon -Rt container_file_t ./netatlas-data`. The 1.2.4 Linux loader repeats the ownership correction and mounts the folder with the SELinux private-container label. Keep this folder when replacing the container because it contains `hosts.db` and scan history.
+On an SELinux-enforcing host such as RHEL, also run `sudo chcon -Rt container_file_t ./netatlas-data`. The Linux loader repeats the ownership correction and mounts the folder with the SELinux private-container label. Keep this folder when replacing the container because it contains `hosts.db` and scan history.
 
 Docker deployments listen on all node interfaces by default. Restrict TCP/8765 to the management subnet or use an HTTPS reverse proxy because scan credentials are entered through the web interface.
 
@@ -39,15 +39,19 @@ Docker deployments listen on all node interfaces by default. Restrict TCP/8765 t
 - A host is listed only when TCP 22, 80, 443, or 3389 accepts a connection.
 - Lightweight OS labels are evidence-based but not definitive. Install Nmap and enable deep inspection for better service and OS versions.
 - SSH resource collection supports separate username/password profiles for Linux and Windows OpenSSH. Passwords are memory-only and cleared after the scan; they are never saved or exported.
+- NetAtlas tries both standard password authentication and password-backed keyboard-interactive authentication. Host details and inventory CSV distinguish rejected credentials, SSH negotiation errors, timeouts, and a successful login whose inventory commands were restricted.
 - Windows resource collection uses PowerShell remoting (WinRM) with the Windows identity running NetAtlas. The target must allow WinRM and authorize that identity.
 - Services are independent: a Windows server listening on both SSH and RDP is listed with both protocols and receives both MobaXterm sessions.
 - NetAtlas infers a role name from the hostname, operating system, and verified services. Role names can be edited in **Remembered Hosts** and manual values survive later scans.
 - Only resolved hostnames are added to **Remembered Hosts**. Repeat scans update the existing site/IP record and add newly resolved hosts.
+- The **Direct server targets** field accepts individual IPv4 addresses, with an optional label, so exceptions can be scanned without adding an entire subnet. Full VLANs and direct targets can be combined in one scan.
 - The internal DNS suffix `.tng.topsecret` is removed from displayed, remembered, CSV, and MobaXterm hostnames.
 - Scanning uses only the networks you enter. Only scan networks you own or are authorized to assess.
 
 ## MobaXterm export
 
 After a completed scan, filter or sort the inventory, select the required hosts, and choose **Export selected**. Windows hosts are grouped beneath `Windows` and receive SSH and RDP entries. Linux hosts are grouped beneath `Linux` and receive SSH only. Site and VLAN folders are retained under each OS block. HTTP and HTTPS remain inventory-only and are never exported as sessions. Passwords are never exported. A selected-host inventory CSV and generic compatibility CSV are also available.
+
+Every host with a verified SSH service also has an **SSH** shortcut in the Hosts and Remembered Hosts tables and an **Open SSH in MobaXterm** link in host details. It uses `ssh://username@ip:22`; configure Windows to associate SSH links with MobaXterm. The username is included when known. The password is intentionally excluded because credentials embedded in URLs can leak through browser history, logs, and process arguments.
 
 In MobaXterm, right-click **User sessions** and choose **Import sessions from file**.

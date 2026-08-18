@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.5
+
+- Renamed the runtime badge to show `NetAtlas version` and the exact running release.
+- Added confirmed deletion from Remembered Hosts, available in both the table and host details.
+- Added direct IPv4 server targets, which can be scanned alone or alongside VLAN subnets.
+- Added password-backed keyboard-interactive SSH fallback and clearer authentication, negotiation, timeout, and restricted-command diagnostics.
+- Added per-host SSH shortcuts with the discovered/configured username for MobaXterm or another registered Windows SSH handler; passwords remain excluded.
+- Persisted SSH username and diagnostic fields in the remembered-host database and selected inventory CSV.
+
 ## 1.2.4
 
 - Added per-column filtering and sortable headers to current and remembered host inventories.

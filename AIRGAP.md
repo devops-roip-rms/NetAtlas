@@ -12,7 +12,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-offline.ps1
 
 For an ARM64 Docker host, add `-Platform linux/arm64`.
 
-The script creates `dist/netatlas-1.2.4-linux-amd64.tar`, its SHA-256 checksum, and the offline loader scripts. Copy the entire `dist` folder to approved removable media.
+The script creates `dist/netatlas-1.2.5-linux-amd64.tar`, its SHA-256 checksum, and the offline loader scripts. Copy the entire `dist` folder to approved removable media.
 
 ## 2. Load and run inside the air gap
 
@@ -20,7 +20,7 @@ Windows Docker host:
 
 ```powershell
 New-Item -ItemType Directory -Force .\netatlas-data
-.\load-and-run-airgap.ps1 -Archive .\netatlas-1.2.4-linux-amd64.tar -DataPath .\netatlas-data
+.\load-and-run-airgap.ps1 -Archive .\netatlas-1.2.5-linux-amd64.tar -DataPath .\netatlas-data
 ```
 
 Linux Docker host—first create the persistent local database folder:
@@ -40,16 +40,18 @@ sudo chcon -Rt container_file_t ./netatlas-data
 Then load and run NetAtlas:
 
 ```sh
-sh ./load-and-run-airgap.sh ./netatlas-1.2.4-linux-amd64.tar 8765 ./netatlas-data 0.0.0.0
+sh ./load-and-run-airgap.sh ./netatlas-1.2.5-linux-amd64.tar 8765 ./netatlas-data 0.0.0.0
 ```
 
-The Linux loader accepts checksum files copied from either Windows or Linux and verifies the hash independently of line-ending format. Version 1.2.4 also normalizes the local folder ownership to the container user (UID/GID 10001) and applies Docker's private SELinux label during the mount.
+The Linux loader accepts checksum files copied from either Windows or Linux and verifies the hash independently of line-ending format. It also normalizes the local folder ownership to the container user (UID/GID 10001) and applies Docker's private SELinux label during the mount.
 
 Open `http://<NETATLAS-NODE-IP>:8765`. The loader publishes on all node interfaces by default. `netatlas-data/hosts.db` and scan history stay outside the container, so replacing the image does not erase inventory. Do not delete this folder unless you intentionally want to reset NetAtlas.
 
 ## SSH credentials
 
-The scan setup provides independent Linux SSH and Windows OpenSSH profiles. Configure either or both username/password pairs. NetAtlas tries the OS-matched profile first and, for initially unknown hosts, safely falls back to the other configured profile. Passwords are held only in server memory while authenticated enrichment runs, then discarded. They are excluded from saved scan history, API responses, CSV, and MobaXterm exports.
+The scan setup provides independent Linux SSH and Windows OpenSSH profiles. Configure either or both username/password pairs. NetAtlas tries the OS-matched profile first and, for initially unknown hosts, safely falls back to the other configured profile. It supports both standard password and password-backed keyboard-interactive login. Passwords are held only in server memory while authenticated enrichment runs, then discarded. They are excluded from saved scan history, API responses, CSV, SSH URLs, and MobaXterm exports.
+
+If manual SSH works but enrichment does not, open the host details or selected inventory CSV and check the SSH diagnostic fields. Common cases are a true MFA/OTP prompt, a restricted shell or disabled command execution, an account policy such as `AllowUsers`, a timeout, or algorithms that the bundled SSH client and server cannot negotiate. A successful login with unavailable PowerShell, CIM, `/etc/os-release`, `df`, or `sudo` commands is reported separately from bad credentials.
 
 Because the SSH credential form is sensitive, allow port 8765 only from your management subnet. For production remote access, place NetAtlas behind an approved HTTPS reverse proxy. To restrict access to the node itself, pass `-BindAddress 127.0.0.1` on Windows or use `127.0.0.1` as the fourth Linux loader argument.
 
@@ -74,4 +76,4 @@ The container must have routes to both sites and all VLANs. Docker Desktop norma
 
 Deep Nmap OS detection uses `NET_RAW` and `NET_ADMIN`; the loader grants only those capabilities. The application itself runs as a non-root user with a read-only container filesystem.
 
-HTTP and HTTPS remain visible in inventory but are not exported as MobaXterm sessions. Filter or sort any column, select the required hosts, and export only that selection. Windows hosts are exported beneath a `Windows` tree with both SSH and RDP sessions. Linux hosts are exported beneath a `Linux` tree with SSH only.
+HTTP and HTTPS remain visible in inventory but are not exported as MobaXterm sessions. Filter or sort any column, select the required hosts, and export only that selection. Windows hosts are exported beneath a `Windows` tree with both SSH and RDP sessions. Linux hosts are exported beneath a `Linux` tree with SSH only. Verified SSH rows also expose `ssh://username@ip:22` shortcuts for a registered Windows SSH handler such as MobaXterm; passwords are never placed in these URLs.

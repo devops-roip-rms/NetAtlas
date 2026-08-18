@@ -37,7 +37,7 @@ WEB_DIR = APP_DIR / "web"
 DATA_DIR = Path(os.environ.get("NETATLAS_DATA_DIR", APP_DIR / "data")).resolve()
 DATA_DIR.mkdir(exist_ok=True)
 HOSTS_DB = DATA_DIR / "hosts.db"
-APP_VERSION = "1.2.4"
+APP_VERSION = "1.2.5"
 SENSITIVE_CONFIG_KEYS = {"ssh_password", "linux_ssh_password", "windows_ssh_password", "password"}
 
 PRIMARY_PORTS = {22: "SSH", 80: "HTTP", 443: "HTTPS", 3389: "RDP"}
@@ -105,6 +105,10 @@ def infer_host_role(host: dict) -> str:
 
 def normalize_host_record(host: dict) -> dict:
     host["hostname"] = normalize_hostname(host.get("hostname"))
+    host.setdefault("ssh_username", "")
+    host.setdefault("ssh_auth_status", "Not attempted" if 22 in host.get("open_ports", []) else "")
+    host.setdefault("ssh_auth_method", "")
+    host.setdefault("ssh_auth_error", "")
     if not host.get("role"):
         host["role"] = infer_host_role(host)
     return host
@@ -176,8 +180,31 @@ def build_address_plan(config: dict) -> list[dict]:
                 plan.append({"site": site_name, "vlan": vlan_name, "cidr": str(network), "ip": str(address)})
                 if len(plan) > max_addresses:
                     raise ValueError(f"Address plan exceeds the safety limit of {max_addresses:,} addresses")
+    direct_group = clean_text(config.get("direct_target_group"), 60) or "Direct targets"
+    direct_targets = config.get("direct_targets", [])
+    if direct_targets and not isinstance(direct_targets, list):
+        raise ValueError("Direct targets must be a list")
+    for index, target in enumerate(direct_targets):
+        if not isinstance(target, dict):
+            raise ValueError("Each direct target must contain an IPv4 address")
+        raw_ip = clean_text(target.get("ip"), 64)
+        try:
+            address = ipaddress.ip_address(raw_ip)
+        except ValueError as exc:
+            raise ValueError(f"Invalid direct target IPv4 address: {raw_ip or 'empty line'}") from exc
+        if address.version != 4:
+            raise ValueError(f"IPv6 is not supported yet: {raw_ip}")
+        text_address = str(address)
+        key = (direct_group, text_address)
+        if key in seen:
+            continue
+        seen.add(key)
+        target_name = clean_text(target.get("name"), 60) or f"Direct server {index + 1}"
+        plan.append({"site": direct_group, "vlan": target_name, "cidr": f"{text_address}/32", "ip": text_address})
+        if len(plan) > max_addresses:
+            raise ValueError(f"Address plan exceeds the safety limit of {max_addresses:,} addresses")
     if not plan:
-        raise ValueError("Add at least one valid IPv4 subnet")
+        raise ValueError("Add at least one valid IPv4 subnet or direct server target")
     return plan
 
 
@@ -293,6 +320,10 @@ def scan_host(item: dict, timeout: float, auxiliary: bool) -> dict | None:
         "os_evidence": evidence,
         "resources": {},
         "resource_status": "Credentials not supplied",
+        "ssh_username": "",
+        "ssh_auth_status": "Not attempted" if 22 in opened else "",
+        "ssh_auth_method": "",
+        "ssh_auth_error": "",
         "discovered_at": utc_now(),
     }
     host["role"] = infer_host_role(host)
@@ -441,17 +472,60 @@ def apply_windows_ssh(host: dict, client: object) -> bool:
     return True
 
 
+def ssh_exception_text(exc: Exception) -> str:
+    if paramiko is not None and isinstance(exc, paramiko.AuthenticationException):
+        return "credentials rejected by both password and keyboard-interactive authentication"
+    if paramiko is not None and isinstance(exc, paramiko.ssh_exception.NoValidConnectionsError):
+        return "connection failed before authentication"
+    if paramiko is not None and isinstance(exc, paramiko.ssh_exception.IncompatiblePeer):
+        return "SSH algorithms are incompatible with this server"
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return "SSH handshake or authentication timed out"
+    detail = clean_text(exc, 140)
+    return detail or exc.__class__.__name__
+
+
+def connect_ssh_password(client: object, ip: str, username: str, password: str) -> str:
+    """Connect with password auth, then retry keyboard-interactive password prompts."""
+    try:
+        client.connect(
+            hostname=ip, port=22, username=username, password=password,
+            timeout=12, banner_timeout=15, auth_timeout=15,
+            allow_agent=False, look_for_keys=False,
+        )
+        return "password"
+    except paramiko.AuthenticationException as password_error:
+        transport = client.get_transport()
+        if transport is None or not transport.is_active():
+            raise password_error
+
+        def password_handler(_title: str, _instructions: str, prompts: list[tuple[str, bool]]) -> list[str]:
+            responses = []
+            for prompt, echo in prompts:
+                prompt_text = prompt.lower()
+                responses.append(password if (not echo or "password" in prompt_text or "passcode" in prompt_text) else "")
+            return responses
+
+        try:
+            transport.auth_interactive(username, password_handler)
+        except paramiko.AuthenticationException as interactive_error:
+            raise interactive_error from password_error
+        if not transport.is_authenticated():
+            raise password_error
+        return "keyboard-interactive"
+
+
 def try_ssh_profile(host: dict, username: str, password: str, profile: str) -> tuple[bool, str]:
     if not username or not password:
         return False, "not configured"
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
-        client.connect(
-            hostname=host["ip"], port=22, username=username, password=password,
-            timeout=8, banner_timeout=8, auth_timeout=8,
-            allow_agent=False, look_for_keys=False,
-        )
+        auth_method = connect_ssh_password(client, host["ip"], username, password)
+        host["ssh_username"] = username
+        host["ssh_auth_status"] = "Authenticated"
+        host["ssh_auth_method"] = auth_method
+        host["ssh_auth_error"] = ""
         windows_first = profile == "Windows" or host.get("os_family") == "Windows" or "windows" in host.get("ssh_banner", "").lower()
         if windows_first:
             enriched = apply_windows_ssh(host, client) or apply_linux_ssh(host, client)
@@ -460,9 +534,11 @@ def try_ssh_profile(host: dict, username: str, password: str, profile: str) -> t
         if enriched:
             host["credential_profile"] = f"{profile} SSH profile"
             return True, ""
-        return False, "authenticated, but OS commands were unavailable"
+        host["resource_status"] = "SSH authenticated, but inventory commands were unavailable or restricted"
+        host["ssh_auth_status"] = "Authenticated; inventory commands unavailable"
+        return True, ""
     except Exception as exc:
-        return False, clean_text(exc, 100)
+        return False, ssh_exception_text(exc)
     finally:
         client.close()
 
@@ -476,6 +552,9 @@ def enrich_ssh_resources(host: dict, linux_user: str, linux_password: str, windo
     ]
     if host.get("os_family") == "Windows":
         profiles.reverse()
+    preferred = next((username for _profile, username, _password in profiles if username), "")
+    if preferred:
+        host["ssh_username"] = preferred
     unique: set[tuple[str, str]] = set()
     errors = []
     for profile, username, password in profiles:
@@ -489,6 +568,8 @@ def enrich_ssh_resources(host: dict, linux_user: str, linux_password: str, windo
         errors.append(f"{profile} profile: {error}")
     if errors:
         host["resource_status"] = "SSH enrichment failed — " + "; ".join(errors)
+        host["ssh_auth_status"] = "Authentication or SSH negotiation failed"
+        host["ssh_auth_error"] = "; ".join(errors)
 
 
 def enrich_windows_resources(host: dict, use_ssl: bool) -> None:
@@ -551,6 +632,10 @@ def init_hosts_db() -> None:
                 os_evidence TEXT NOT NULL DEFAULT '',
                 resources_json TEXT NOT NULL DEFAULT '{}',
                 resource_status TEXT NOT NULL DEFAULT '',
+                ssh_username TEXT NOT NULL DEFAULT '',
+                ssh_auth_status TEXT NOT NULL DEFAULT '',
+                ssh_auth_method TEXT NOT NULL DEFAULT '',
+                ssh_auth_error TEXT NOT NULL DEFAULT '',
                 first_seen TEXT NOT NULL,
                 last_seen TEXT NOT NULL,
                 last_scan_id TEXT NOT NULL,
@@ -559,6 +644,10 @@ def init_hosts_db() -> None:
             )
             """
         )
+        existing_columns = {row["name"] for row in connection.execute("PRAGMA table_info(remembered_hosts)")}
+        for column in ("ssh_username", "ssh_auth_status", "ssh_auth_method", "ssh_auth_error"):
+            if column not in existing_columns:
+                connection.execute(f"ALTER TABLE remembered_hosts ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
         connection.execute("CREATE INDEX IF NOT EXISTS remembered_hosts_hostname ON remembered_hosts(hostname)")
         connection.execute("CREATE INDEX IF NOT EXISTS remembered_hosts_last_seen ON remembered_hosts(last_seen DESC)")
         connection.commit()
@@ -583,8 +672,9 @@ def remember_job_hosts(job: ScanJob) -> int:
                 INSERT INTO remembered_hosts (
                     site, ip, hostname, role, vlan, cidr, services_json, open_ports_json,
                     web_json, os_family, os_version, os_confidence, os_evidence,
-                    resources_json, resource_status, first_seen, last_seen, last_scan_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    resources_json, resource_status, ssh_username, ssh_auth_status,
+                    ssh_auth_method, ssh_auth_error, first_seen, last_seen, last_scan_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(site, ip) DO UPDATE SET
                     hostname=excluded.hostname,
                     role=CASE WHEN remembered_hosts.role_locked=1 THEN remembered_hosts.role ELSE excluded.role END,
@@ -599,6 +689,10 @@ def remember_job_hosts(job: ScanJob) -> int:
                     os_evidence=excluded.os_evidence,
                     resources_json=excluded.resources_json,
                     resource_status=excluded.resource_status,
+                    ssh_username=excluded.ssh_username,
+                    ssh_auth_status=excluded.ssh_auth_status,
+                    ssh_auth_method=excluded.ssh_auth_method,
+                    ssh_auth_error=excluded.ssh_auth_error,
                     last_seen=excluded.last_seen,
                     last_scan_id=excluded.last_scan_id,
                     seen_count=remembered_hosts.seen_count+1
@@ -610,7 +704,9 @@ def remember_job_hosts(job: ScanJob) -> int:
                     json.dumps(host.get("web", [])), clean_text(host.get("os_family"), 40),
                     clean_text(host.get("os_version"), 180), int(host.get("os_confidence") or 0),
                     clean_text(host.get("os_evidence"), 180), json.dumps(host.get("resources", {})),
-                    clean_text(host.get("resource_status"), 240), observed, observed, job.id,
+                    clean_text(host.get("resource_status"), 240), clean_text(host.get("ssh_username"), 100),
+                    clean_text(host.get("ssh_auth_status"), 160), clean_text(host.get("ssh_auth_method"), 80),
+                    clean_text(host.get("ssh_auth_error"), 300), observed, observed, job.id,
                 ),
             )
             remembered += 1
@@ -669,6 +765,24 @@ def update_remembered_role(site: object, ip: object, role: object) -> dict:
     return {"site": site_name, "ip": address, "role": role_name, "role_locked": True}
 
 
+def delete_remembered_host(site: object, ip: object) -> dict:
+    site_name = clean_text(site, 60)
+    address = clean_text(ip, 64)
+    if not site_name or not address:
+        raise ValueError("Site and IP address are required")
+    ipaddress.ip_address(address)
+    init_hosts_db()
+    connection = hosts_db_connection()
+    try:
+        cursor = connection.execute("DELETE FROM remembered_hosts WHERE site=? AND ip=?", (site_name, address))
+        if cursor.rowcount != 1:
+            raise ValueError("Remembered host was not found")
+        connection.commit()
+    finally:
+        connection.close()
+    return {"ok": True, "site": site_name, "ip": address}
+
+
 def save_job(job: ScanJob) -> None:
     path = DATA_DIR / f"scan-{job.id}.json"
     path.write_text(json.dumps(job.public(), indent=2), encoding="utf-8")
@@ -705,11 +819,19 @@ def run_scan(job: ScanJob) -> None:
             with ThreadPoolExecutor(max_workers=min(6, workers)) as pool:
                 list(pool.map(enrich_nmap, job.results))
 
+        linux_user = clean_text(job.config.get("linux_ssh_username"), 100)
+        windows_user = clean_text(job.config.get("windows_ssh_username"), 100)
+        for host in job.results:
+            if 22 not in host.get("open_ports", []):
+                continue
+            if host.get("os_family") == "Windows":
+                host["ssh_username"] = windows_user or linux_user
+            else:
+                host["ssh_username"] = linux_user or windows_user
+
         if not job.cancelled and job.config.get("ssh_resources"):
             job.current_phase = "Collecting Linux and Windows resources over SSH"
-            linux_user = clean_text(job.config.get("linux_ssh_username"), 100)
             linux_password = str(job.secrets.get("linux_ssh_password", ""))
-            windows_user = clean_text(job.config.get("windows_ssh_username"), 100)
             windows_password = str(job.secrets.get("windows_ssh_password", ""))
             with ThreadPoolExecutor(max_workers=min(12, workers)) as pool:
                 list(pool.map(lambda h: enrich_ssh_resources(h, linux_user, linux_password, windows_user, windows_password), job.results))
@@ -788,14 +910,15 @@ def export_mobaxterm(job: ScanJob, linux_ssh_user: str = "", rdp_user: str = "",
         folder = f"{block}\\{safe_name(host['site'])}\\{safe_name(host['vlan'])}"
         sessions: list[tuple[str, str]] = []
         base = safe_name(host.get("hostname") or host["ip"])
+        observed_ssh_user = clean_text(host.get("ssh_username"), 100)
         if family == "Windows":
-            sessions.append((f"{base} - SSH", ssh_session(host, windows_ssh_user or linux_ssh_user)))
+            sessions.append((f"{base} - SSH", ssh_session(host, windows_ssh_user or observed_ssh_user or linux_ssh_user)))
             sessions.append((f"{base} - RDP", rdp_session(host, rdp_user)))
         elif family == "Linux":
-            sessions.append((f"{base} - SSH", ssh_session(host, linux_ssh_user)))
+            sessions.append((f"{base} - SSH", ssh_session(host, linux_ssh_user or observed_ssh_user)))
         else:
             if "SSH" in host["services"]:
-                sessions.append((f"{base} - SSH", ssh_session(host, linux_ssh_user or windows_ssh_user)))
+                sessions.append((f"{base} - SSH", ssh_session(host, observed_ssh_user or linux_ssh_user or windows_ssh_user)))
             if "RDP" in host["services"]:
                 sessions.append((f"{base} - RDP", rdp_session(host, rdp_user)))
         if sessions:
@@ -821,14 +944,15 @@ def export_csv(job: ScanJob, linux_ssh_user: str = "", rdp_user: str = "", windo
         block = family if family in {"Windows", "Linux"} else "Unclassified"
         folder = f"NetAtlas\\{block}\\{host['site']}\\{host['vlan']}"
         name = host.get("hostname") or host["ip"]
+        observed_ssh_user = clean_text(host.get("ssh_username"), 100)
         if family == "Windows":
-            writer.writerow([f"{name} - SSH", "SSH", host["ip"], 22, windows_ssh_user or linux_ssh_user, folder, ""])
+            writer.writerow([f"{name} - SSH", "SSH", host["ip"], 22, windows_ssh_user or observed_ssh_user or linux_ssh_user, folder, ""])
             writer.writerow([f"{name} - RDP", "RDP", host["ip"], 3389, rdp_user, folder, ""])
         elif family == "Linux":
-            writer.writerow([f"{name} - SSH", "SSH", host["ip"], 22, linux_ssh_user, folder, ""])
+            writer.writerow([f"{name} - SSH", "SSH", host["ip"], 22, linux_ssh_user or observed_ssh_user, folder, ""])
         else:
             if "SSH" in host["services"]:
-                writer.writerow([f"{name} - SSH", "SSH", host["ip"], 22, linux_ssh_user or windows_ssh_user, folder, ""])
+                writer.writerow([f"{name} - SSH", "SSH", host["ip"], 22, observed_ssh_user or linux_ssh_user or windows_ssh_user, folder, ""])
             if "RDP" in host["services"]:
                 writer.writerow([f"{name} - RDP", "RDP", host["ip"], 3389, rdp_user, folder, ""])
     return buffer.getvalue().encode("utf-8-sig")
@@ -840,6 +964,7 @@ def export_inventory_csv(job: ScanJob, hosts: list[dict] | None = None) -> bytes
     writer.writerow([
         "site", "vlan", "cidr", "hostname", "hostname_source", "role", "ip", "services", "open_ports",
         "os_family", "os_version", "os_confidence", "os_evidence", "resource_status",
+        "ssh_username", "ssh_auth_status", "ssh_auth_method", "ssh_auth_error",
         "cpu_cores", "ram_gb", "disk_root_gb", "disk_c_gb", "disk_free_gb", "web_urls",
     ])
     for host in job.results if hosts is None else hosts:
@@ -850,6 +975,8 @@ def export_inventory_csv(job: ScanJob, hosts: list[dict] | None = None) -> bytes
             ",".join(host.get("services", [])), ",".join(str(p) for p in host.get("open_ports", [])),
             host.get("os_family", ""), host.get("os_version", ""), host.get("os_confidence", ""),
             host.get("os_evidence", ""), host.get("resource_status", ""),
+            host.get("ssh_username", ""), host.get("ssh_auth_status", ""),
+            host.get("ssh_auth_method", ""), host.get("ssh_auth_error", ""),
             resources.get("cpu_cores", ""), resources.get("ram_gb", ""), resources.get("disk_root_gb", ""),
             resources.get("disk_c_gb", ""), resources.get("disk_free_gb", ""),
             ",".join(web.get("url", "") for web in host.get("web", [])),
@@ -903,6 +1030,10 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/remembered-hosts/role":
                 payload = self.json_body()
                 self.send_json(update_remembered_role(payload.get("site"), payload.get("ip"), payload.get("role")))
+                return
+            if path == "/api/remembered-hosts/delete":
+                payload = self.json_body()
+                self.send_json(delete_remembered_host(payload.get("site"), payload.get("ip")))
                 return
             export_match = re.fullmatch(r"/api/scans/([a-f0-9]+)/export", path)
             if export_match:
