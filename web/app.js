@@ -48,15 +48,29 @@ function parseVlans(text) {
   });
 }
 
+function parseDirectTargets(text) {
+  return text.split(/\r?\n/).map(x => x.trim()).filter(Boolean).map((line, index) => {
+    const comma = line.lastIndexOf(",");
+    if (comma > -1) return {name: line.slice(0, comma).trim() || `Direct server ${index + 1}`, ip: line.slice(comma + 1).trim()};
+    return {name: `Direct server ${index + 1}`, ip: line};
+  });
+}
+
 function estimate() {
   let count = 0, vlans = 0;
   [$("#siteAVlans").value, $("#siteBVlans").value].forEach(text => parseVlans(text).forEach(v => {
-    const bits = Number(v.cidr.split("/")[1]); if (bits >= 20 && bits <= 30) count += Math.max(0, 2 ** (32 - bits) - 2); vlans++;
+    const slash = v.cidr.split("/"), bits = slash.length > 1 ? Number(slash[1]) : 32;
+    if (bits >= 20 && bits <= 30) count += Math.max(0, 2 ** (32 - bits) - 2);
+    else if (bits === 31) count += 2;
+    else if (bits === 32) count += 1;
+    vlans++;
   }));
-  $("#scopeEstimate").textContent = `${count.toLocaleString()} addresses`;
-  $("#addressEstimate").textContent = `${vlans} VLANs · up to ${count.toLocaleString()} hosts`;
+  const direct = parseDirectTargets($("#directTargets").value).length;
+  count += direct;
+  $("#scopeEstimate").textContent = `${count.toLocaleString()} ${count === 1 ? "address" : "addresses"}`;
+  $("#addressEstimate").textContent = `${vlans} ${vlans === 1 ? "VLAN" : "VLANs"}${direct ? ` + ${direct} direct` : ""} · up to ${count.toLocaleString()} ${count === 1 ? "host" : "hosts"}`;
 }
-[$("#siteAVlans"), $("#siteBVlans")].forEach(x => x.addEventListener("input", estimate)); estimate();
+[$("#siteAVlans"), $("#siteBVlans"), $("#directTargets")].forEach(x => x.addEventListener("input", estimate)); estimate();
 $("#concurrency").addEventListener("input", e => $("#concurrencyValue").textContent = e.target.value);
 $("#sshResources").addEventListener("change", e => $("#sshFields").classList.toggle("show", e.target.checked));
 $("#windowsResources").addEventListener("change", e => $("#sslToggle").classList.toggle("hidden", !e.target.checked));
@@ -67,7 +81,7 @@ async function checkHealth() {
     $("#backendPulse").classList.add("ok"); $("#backendLabel").textContent = "Local scanner ready";
     const caps = [state.health.nmap ? "Nmap available" : "Nmap optional", state.health.password_ssh ? "Password SSH ready" : "Password SSH unavailable"];
     $("#capabilities").textContent = caps.join(" · ");
-    $("#runtimeBadge").innerHTML = `<i></i><span>${state.health.runtime === "container" ? "Docker appliance" : "Local appliance"} · v${esc(state.health.version)}</span>`;
+    $("#runtimeBadge").innerHTML = `<i></i><span>NetAtlas version ${esc(state.health.version)}</span>`;
     if (!state.health.winrm) {
       $("#windowsResources").disabled = true;
       $("#winrmOption").classList.add("disabled-option");
@@ -90,6 +104,8 @@ function scanConfig() {
       {name: $("#siteAName").value.trim(), vlans: parseVlans($("#siteAVlans").value)},
       {name: $("#siteBName").value.trim(), vlans: parseVlans($("#siteBVlans").value)}
     ],
+    direct_target_group: $("#directTargetGroup").value.trim() || "Direct targets",
+    direct_targets: parseDirectTargets($("#directTargets").value),
     concurrency: Number($("#concurrency").value), timeout: Number($("#timeout").value),
     auxiliary_ports: $("#auxiliary").checked, deep_scan: $("#deepScan").checked,
     ssh_resources: $("#sshResources").checked,
@@ -133,7 +149,7 @@ function showRunning(job) {
 function finishHero(job) {
   $("#progressPanel").classList.add("hidden"); $("#heroScanButton").classList.remove("hidden"); $("#addressEstimate").classList.remove("hidden");
   if (job.status === "complete") {
-    $("#heroPill").innerHTML = "<i></i> INVENTORY CURRENT"; $("#heroTitle").innerHTML = `Discovery complete.<br><em>${job.summary.hosts} endpoints are ready.</em>`;
+    $("#heroPill").innerHTML = "<i></i> INVENTORY CURRENT"; $("#heroTitle").innerHTML = `Discovery complete.<br><em>${job.summary.hosts} ${job.summary.hosts === 1 ? "endpoint is" : "endpoints are"} ready.</em>`;
     $("#heroText").textContent = "Review the evidence, filter any column, select the hosts you need, and export only those connections."; $("#heroScanButton").textContent = "Run another scan →";
   } else { $("#heroPill").textContent = job.status.toUpperCase(); $("#heroTitle").innerHTML = "Scan stopped.<br><em>Your partial results are safe.</em>"; }
 }
@@ -161,6 +177,24 @@ function renderRecent(results) {
 }
 const serviceChip = x => `<span class="chip ${x}">${esc(x)}</span>`;
 const esc = x => String(x ?? "").replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
+
+function sshUsernameFor(host) {
+  if (host.ssh_username) return host.ssh_username;
+  const config = state.job?.config || {};
+  if (host.os_family === "Windows") return config.windows_ssh_username || config.linux_ssh_username || "";
+  return config.linux_ssh_username || config.windows_ssh_username || "";
+}
+
+function sshUri(host) {
+  const username = sshUsernameFor(host);
+  const authority = username ? `${encodeURIComponent(username)}@${host.ip}` : host.ip;
+  return `ssh://${authority}:22`;
+}
+
+function rowSshLink(host) {
+  if (!(host.services || []).includes("SSH")) return "";
+  return `<a class="row-moba" href="${esc(sshUri(host))}" title="Open SSH in MobaXterm or your Windows SSH handler" aria-label="Open SSH to ${esc(host.hostname || host.ip)}">SSH</a>`;
+}
 
 function resourceText(host) {
   const r = host.resources || {}, parts = [];
@@ -231,11 +265,11 @@ function updateSelectionControls(rows) {
 
 function renderTable() {
   const rows = filteredResults(); $("#resultCount").textContent = `${rows.length} host${rows.length === 1 ? "" : "s"}`;
-  $("#hostTable").innerHTML = rows.length ? rows.map(h => `<tr tabindex="0" data-host="${esc(h.ip)}" data-site="${esc(h.site)}"><td class="select-cell"><input type="checkbox" data-host-select="${esc(hostKey(h))}" aria-label="Select ${esc(h.hostname || h.ip)}" ${state.selected.has(hostKey(h)) ? "checked" : ""}></td><td><strong>${esc(h.hostname || "Unresolved")}</strong><small>${esc(h.ip)}</small></td><td><span class="role-pill">${esc(h.role || "Network Endpoint")}</span></td><td><strong>${esc(h.site)}</strong><small>${esc(h.vlan)} · ${esc(h.cidr)}</small></td><td><div class="service-chips">${(h.services || []).map(serviceChip).join("")}</div></td><td><strong>${esc(h.os_version || h.os_family)}</strong><small>${esc(h.os_evidence)}</small></td><td><small>${esc(resourceText(h))}</small></td><td><div class="confidence"><i style="--c:${h.os_confidence || 0}%"></i><span>${h.os_confidence || 0}%</span></div></td><td><span class="row-open">↗</span></td></tr>`).join("") : '<tr><td colspan="9" class="table-empty">No hosts match the current filters.</td></tr>';
+  $("#hostTable").innerHTML = rows.length ? rows.map(h => `<tr tabindex="0" data-host="${esc(h.ip)}" data-site="${esc(h.site)}"><td class="select-cell"><input type="checkbox" data-host-select="${esc(hostKey(h))}" aria-label="Select ${esc(h.hostname || h.ip)}" ${state.selected.has(hostKey(h)) ? "checked" : ""}></td><td><strong>${esc(h.hostname || "Unresolved")}</strong><small>${esc(h.ip)}</small></td><td><span class="role-pill">${esc(h.role || "Network Endpoint")}</span></td><td><strong>${esc(h.site)}</strong><small>${esc(h.vlan)} · ${esc(h.cidr)}</small></td><td><div class="service-chips">${(h.services || []).map(serviceChip).join("")}</div></td><td><strong>${esc(h.os_version || h.os_family)}</strong><small>${esc(h.os_evidence)}</small></td><td><small>${esc(resourceText(h))}</small></td><td><div class="confidence"><i style="--c:${h.os_confidence || 0}%"></i><span>${h.os_confidence || 0}%</span></div></td><td><div class="row-actions">${rowSshLink(h)}<span class="row-open">↗</span></div></td></tr>`).join("") : '<tr><td colspan="9" class="table-empty">No hosts match the current filters.</td></tr>';
   $$('[data-host]').forEach(row => {
-    row.addEventListener("click", event => { if (!event.target.closest('input,button')) openHost(row.dataset.host, row.dataset.site); });
+    row.addEventListener("click", event => { if (!event.target.closest('input,button,a')) openHost(row.dataset.host, row.dataset.site); });
     row.addEventListener("keydown", event => {
-      if ((event.key === "Enter" || event.key === " ") && !event.target.closest('input,button')) { event.preventDefault(); openHost(row.dataset.host, row.dataset.site); }
+      if ((event.key === "Enter" || event.key === " ") && !event.target.closest('input,button,a')) { event.preventDefault(); openHost(row.dataset.host, row.dataset.site); }
     });
   });
   $$('[data-host-select]').forEach(input => input.addEventListener("change", event => {
@@ -255,12 +289,16 @@ function openHost(ip, site) {
 
 function showHost(host, remembered = false) {
   const links = [];
+  if ((host.services || []).includes("SSH")) links.push(`<a class="detail-link moba-link" href="${esc(sshUri(host))}">Open SSH in MobaXterm ↗</a>`);
   if (host.services.includes("HTTP")) links.push(`<a class="detail-link" href="http://${esc(host.ip)}" target="_blank" rel="noreferrer">Open HTTP ↗</a>`);
   if (host.services.includes("HTTPS")) links.push(`<a class="detail-link" href="https://${esc(host.ip)}" target="_blank" rel="noreferrer">Open HTTPS ↗</a>`);
   const resources = Object.entries(host.resources || {}).map(([key, value]) => `<div class="detail-stat"><small>${esc(key.replaceAll("_", " "))}</small><strong>${esc(value)}</strong></div>`).join("");
   const memory = remembered ? `<div class="detail-stat"><small>First seen</small><strong>${esc(new Date(host.first_seen).toLocaleString())}</strong></div><div class="detail-stat"><small>Last seen</small><strong>${esc(new Date(host.last_seen).toLocaleString())} · ${host.seen_count} scans</strong></div>` : "";
-  $("#hostDetail").innerHTML = `<div class="host-detail-hero"><p class="eyebrow">${esc(host.site)} · ${esc(host.vlan)}</p><h2>${esc(host.hostname || "Hostname unresolved")}</h2><p>${esc(host.ip)} · ${esc(host.cidr)}</p><span class="detail-role">${esc(host.role || "Network Endpoint")}</span></div><div class="host-detail-body"><div class="detail-grid"><div class="detail-stat"><small>Role</small><strong>${esc(host.role || "Network Endpoint")}</strong></div><div class="detail-stat"><small>Operating system</small><strong>${esc(host.os_version || host.os_family)}</strong></div><div class="detail-stat"><small>OS evidence</small><strong>${esc(host.os_evidence)} · ${host.os_confidence || 0}%</strong></div><div class="detail-stat"><small>Hostname source</small><strong>${esc(host.hostname_source || "Resolved")}</strong></div><div class="detail-stat"><small>Resource status</small><strong>${esc(host.resource_status || "Not collected")}</strong></div>${memory}</div><div class="detail-section"><h4>Verified connection paths</h4><div class="service-chips">${host.services.map(serviceChip).join("")}</div></div>${resources ? `<div class="detail-section"><h4>Observed resources</h4><div class="detail-grid">${resources}</div></div>` : ""}${links.length ? `<div class="detail-section"><h4>Web consoles</h4><div class="detail-links">${links.join("")}</div></div>` : ""}</div>`;
+  const sshDetails = (host.services || []).includes("SSH") ? `<div class="detail-stat"><small>SSH username</small><strong>${esc(sshUsernameFor(host) || "Not configured")}</strong></div><div class="detail-stat"><small>SSH authentication</small><strong>${esc(host.ssh_auth_status || "Not attempted")}${host.ssh_auth_method ? ` · ${esc(host.ssh_auth_method)}` : ""}</strong></div>${host.ssh_auth_error ? `<div class="detail-stat detail-wide"><small>SSH diagnostic</small><strong>${esc(host.ssh_auth_error)}</strong></div>` : ""}` : "";
+  const deleteAction = remembered ? `<div class="detail-section danger-zone"><h4>Inventory control</h4><button class="danger-button" id="deleteRememberedDetail" type="button">Remove from inventory</button></div>` : "";
+  $("#hostDetail").innerHTML = `<div class="host-detail-hero"><p class="eyebrow">${esc(host.site)} · ${esc(host.vlan)}</p><h2>${esc(host.hostname || "Hostname unresolved")}</h2><p>${esc(host.ip)} · ${esc(host.cidr)}</p><span class="detail-role">${esc(host.role || "Network Endpoint")}</span></div><div class="host-detail-body"><div class="detail-grid"><div class="detail-stat"><small>Role</small><strong>${esc(host.role || "Network Endpoint")}</strong></div><div class="detail-stat"><small>Operating system</small><strong>${esc(host.os_version || host.os_family)}</strong></div><div class="detail-stat"><small>OS evidence</small><strong>${esc(host.os_evidence)} · ${host.os_confidence || 0}%</strong></div><div class="detail-stat"><small>Hostname source</small><strong>${esc(host.hostname_source || "Resolved")}</strong></div><div class="detail-stat"><small>Resource status</small><strong>${esc(host.resource_status || "Not collected")}</strong></div>${sshDetails}${memory}</div><div class="detail-section"><h4>Verified connection paths</h4><div class="service-chips">${host.services.map(serviceChip).join("")}</div></div>${resources ? `<div class="detail-section"><h4>Observed resources</h4><div class="detail-grid">${resources}</div></div>` : ""}${links.length ? `<div class="detail-section"><h4>Connection shortcuts</h4><div class="detail-links">${links.join("")}</div></div>` : ""}${deleteAction}</div>`;
   $("#hostDialog").showModal();
+  if (remembered) $("#deleteRememberedDetail").addEventListener("click", () => confirmDeleteRemembered(host));
 }
 $("#hostSearch").addEventListener("input", renderTable);
 $$('[data-host-filter]').forEach(input => input.addEventListener("input", () => { state.hostTable.filters[input.dataset.hostFilter] = input.value.trim(); renderTable(); }));
@@ -293,11 +331,11 @@ function renderRemembered() {
   $("#rememberedCount").textContent = `${rows.length} remembered host${rows.length === 1 ? "" : "s"}`;
   $("#rememberedTable").innerHTML = rows.length ? rows.map(host => {
     const index = state.remembered.indexOf(host), seen = new Date(host.last_seen);
-    return `<tr tabindex="0" data-remembered-index="${index}"><td><strong>${esc(host.hostname)}</strong><small>${esc(host.ip)}</small></td><td><div class="role-editor"><input data-role-input value="${esc(host.role)}" maxlength="80" aria-label="Role for ${esc(host.hostname)}"><button data-role-save type="button">Save</button></div>${host.role_locked ? '<small class="manual-role">Manual role</small>' : '<small>Auto-detected role</small>'}</td><td><strong>${esc(host.site)}</strong><small>${esc(host.vlan)} · ${esc(host.cidr)}</small></td><td><div class="service-chips">${(host.services || []).map(serviceChip).join("")}</div></td><td><strong>${esc(host.os_version || host.os_family)}</strong><small>${esc(host.os_evidence)}</small></td><td><small>${esc(resourceText(host))}</small></td><td><strong>${esc(seen.toLocaleDateString())}</strong><small>${esc(seen.toLocaleTimeString())}</small></td><td><span class="seen-count">${host.seen_count}</span></td><td><span class="row-open">↗</span></td></tr>`;
+    return `<tr tabindex="0" data-remembered-index="${index}"><td><strong>${esc(host.hostname)}</strong><small>${esc(host.ip)}</small></td><td><div class="role-editor"><input data-role-input value="${esc(host.role)}" maxlength="80" aria-label="Role for ${esc(host.hostname)}"><button data-role-save type="button">Save</button></div>${host.role_locked ? '<small class="manual-role">Manual role</small>' : '<small>Auto-detected role</small>'}</td><td><strong>${esc(host.site)}</strong><small>${esc(host.vlan)} · ${esc(host.cidr)}</small></td><td><div class="service-chips">${(host.services || []).map(serviceChip).join("")}</div></td><td><strong>${esc(host.os_version || host.os_family)}</strong><small>${esc(host.os_evidence)}</small></td><td><small>${esc(resourceText(host))}</small></td><td><strong>${esc(seen.toLocaleDateString())}</strong><small>${esc(seen.toLocaleTimeString())}</small></td><td><span class="seen-count">${host.seen_count}</span></td><td><div class="row-actions">${rowSshLink(host)}<button class="danger-icon" data-delete-remembered type="button" title="Remove from inventory" aria-label="Remove ${esc(host.hostname)} from inventory">×</button><span class="row-open">↗</span></div></td></tr>`;
   }).join("") : '<tr><td colspan="9" class="table-empty">No resolved hosts match the current filters.</td></tr>';
   $$('[data-remembered-index]').forEach(row => {
-    row.addEventListener("click", event => { if (!event.target.closest("input,button")) showHost(state.remembered[Number(row.dataset.rememberedIndex)], true); });
-    row.addEventListener("keydown", event => { if ((event.key === "Enter" || event.key === " ") && !event.target.closest("input,button")) { event.preventDefault(); showHost(state.remembered[Number(row.dataset.rememberedIndex)], true); } });
+    row.addEventListener("click", event => { if (!event.target.closest("input,button,a")) showHost(state.remembered[Number(row.dataset.rememberedIndex)], true); });
+    row.addEventListener("keydown", event => { if ((event.key === "Enter" || event.key === " ") && !event.target.closest("input,button,a")) { event.preventDefault(); showHost(state.remembered[Number(row.dataset.rememberedIndex)], true); } });
   });
   $$('[data-role-save]').forEach(button => button.addEventListener("click", async event => {
     event.stopPropagation();
@@ -311,7 +349,25 @@ function renderRemembered() {
     } catch (error) { button.disabled = false; toast(error.message); }
   }));
   $$('[data-role-input]').forEach(input => input.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); input.closest("tr").querySelector("[data-role-save]").click(); } }));
+  $$('[data-delete-remembered]').forEach(button => button.addEventListener("click", event => {
+    event.stopPropagation();
+    const row = button.closest("tr"), host = state.remembered[Number(row.dataset.rememberedIndex)];
+    confirmDeleteRemembered(host);
+  }));
   updateSortButtons("[data-remembered-sort]", state.rememberedTable);
+}
+
+async function confirmDeleteRemembered(host) {
+  if (!host) return;
+  const label = host.hostname || host.ip;
+  if (!window.confirm(`Remove ${label} (${host.ip}) from Remembered Hosts?\n\nThis cannot be undone. A later scan may add it again.`)) return;
+  try {
+    await api("/api/remembered-hosts/delete", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({site:host.site, ip:host.ip})});
+    state.remembered = state.remembered.filter(item => !(item.site === host.site && item.ip === host.ip));
+    if ($("#hostDialog").open) $("#hostDialog").close();
+    renderRemembered();
+    toast(`Removed ${label} from inventory.`);
+  } catch (error) { toast(error.message); }
 }
 
 async function loadRemembered() {

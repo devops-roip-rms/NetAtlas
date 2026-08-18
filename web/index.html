@@ -124,7 +124,7 @@
           <div class="table-scroll">
             <table class="remembered-table">
               <thead>
-                <tr class="sort-row"><th><button data-remembered-sort="endpoint">Endpoint</button></th><th><button data-remembered-sort="role">Role name</button></th><th><button data-remembered-sort="location">Site / VLAN</button></th><th><button data-remembered-sort="services">Services</button></th><th><button data-remembered-sort="os">Operating system</button></th><th><button data-remembered-sort="resources">Resources</button></th><th><button data-remembered-sort="last_seen">Last seen</button></th><th><button data-remembered-sort="seen_count">Seen</button></th><th></th></tr>
+                <tr class="sort-row"><th><button data-remembered-sort="endpoint">Endpoint</button></th><th><button data-remembered-sort="role">Role name</button></th><th><button data-remembered-sort="location">Site / VLAN</button></th><th><button data-remembered-sort="services">Services</button></th><th><button data-remembered-sort="os">Operating system</button></th><th><button data-remembered-sort="resources">Resources</button></th><th><button data-remembered-sort="last_seen">Last seen</button></th><th><button data-remembered-sort="seen_count">Seen</button></th><th>Actions</th></tr>
                 <tr class="filter-row"><th><input data-remembered-filter="endpoint" placeholder="Filter endpoint" aria-label="Filter remembered endpoint column"></th><th><input data-remembered-filter="role" placeholder="Filter role" aria-label="Filter remembered role column"></th><th><input data-remembered-filter="location" placeholder="Filter site or VLAN" aria-label="Filter remembered site or VLAN column"></th><th><input data-remembered-filter="services" placeholder="Filter services" aria-label="Filter remembered services column"></th><th><input data-remembered-filter="os" placeholder="Filter OS" aria-label="Filter remembered operating system column"></th><th><input data-remembered-filter="resources" placeholder="Filter resources" aria-label="Filter remembered resources column"></th><th><input data-remembered-filter="last_seen" placeholder="Filter last seen" aria-label="Filter last seen column"></th><th><input data-remembered-filter="seen_count" placeholder="Filter count" aria-label="Filter seen count column"></th><th></th></tr>
               </thead>
               <tbody id="rememberedTable"><tr><td colspan="9" class="table-empty">Resolved hosts will appear here after a scan.</td></tr></tbody>
@@ -134,17 +134,17 @@
       </section>
 
       <section class="view" id="configurationView">
-        <div class="section-heading"><div><p class="eyebrow">ADDRESS PLAN</p><h2>Configure scan</h2><p>One IPv4 subnet per line. Labels are optional: <code>VLAN 10, 10.10.10.0/24</code></p></div></div>
+        <div class="section-heading"><div><p class="eyebrow">ADDRESS PLAN</p><h2>Configure scan</h2><p>Scan full VLANs, individual server IPs, or both.</p></div></div>
         <form id="scanForm" class="config-grid">
           <section class="panel config-card">
             <div class="site-title"><span>A</span><div><h3>Site A</h3><p>Primary location</p></div></div>
             <label>Site name<input id="siteAName" value="Site A" required></label>
-            <label>VLAN subnets<textarea id="siteAVlans" rows="11" spellcheck="false" required></textarea></label>
+            <label>VLAN subnets<textarea id="siteAVlans" rows="11" spellcheck="false"></textarea></label>
           </section>
           <section class="panel config-card">
             <div class="site-title second"><span>B</span><div><h3>Site B</h3><p>Secondary location</p></div></div>
             <label>Site name<input id="siteBName" value="Site B" required></label>
-            <label>VLAN subnets<textarea id="siteBVlans" rows="11" spellcheck="false" required></textarea></label>
+            <label>VLAN subnets<textarea id="siteBVlans" rows="11" spellcheck="false"></textarea></label>
           </section>
           <aside class="panel options-card">
             <div><p class="eyebrow">SCAN PROFILE</p><h3>Discovery options</h3></div>
@@ -162,6 +162,10 @@
             </div>
             <label class="toggle" id="winrmOption"><input id="windowsResources" type="checkbox"><i></i><span><b>Windows via WinRM</b><small id="winrmHelp">Uses your current Windows identity</small></span></label>
             <label class="toggle sub-toggle hidden" id="sslToggle"><input id="winrmSsl" type="checkbox"><i></i><span><b>Use WinRM HTTPS</b></span></label>
+            <div class="divider"></div>
+            <p class="mini-title">Direct server targets</p>
+            <label>Target group / site<input id="directTargetGroup" value="Direct targets" maxlength="60"></label>
+            <label>Individual IPv4 addresses<textarea id="directTargets" rows="5" spellcheck="false" placeholder="10.10.10.25&#10;Database, 10.10.10.26"></textarea><small class="field-help">One IP per line. An optional label can precede the IP.</small></label>
             <div class="estimate"><span>Estimated scope</span><strong id="scopeEstimate">5,080 addresses</strong></div>
             <button class="button primary wide" type="submit" id="startScanButton">Start discovery <span>→</span></button>
             <p class="safety-note">Only scan networks you own or are authorized to assess.</p>

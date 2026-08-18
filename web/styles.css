@@ -120,7 +120,7 @@ html[data-theme="dark"] .credential-profile { background:#101b2b; }
 html[data-theme="dark"] .credential-note { background:#102a27; color:#9db9b0; }
 code { padding:2px 5px; border-radius:4px; background:#e9edf2; font-size:11px; }
 
-/* 1.2.4 readability scale: no operational text is intentionally tiny. */
+/* Readability scale: no operational text is intentionally tiny. */
 html { text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; }
 body { font-size: 17px; line-height: 1.55; }
 .shell { grid-template-columns: 260px minmax(0, 1fr); }
@@ -229,4 +229,23 @@ html[data-theme="dark"] td small { color:#b2bdcb; }
 html[data-theme="dark"] .row-open { color:#c4d0dd; background:#26374b; }
 @media (max-width: 1050px) { .shell { grid-template-columns: 76px minmax(0,1fr); }.sidebar { padding-inline:11px; }.brand span:last-child,.nav-item:not(.active) b,.nav-item { font-size:0; }.brand { padding-inline:10px; }.brand-mark { font-size:15px; }.nav-item span { font-size:20px; margin:auto; }.side-bottom { display:none; }.config-grid { grid-template-columns: 1fr 1fr; }.options-card { grid-column:1/-1; }.progress-panel { width: 36%; }.hero-copy { max-width:60%; } }
 @media (max-width: 760px) { .shell { display:block; }.sidebar { position:fixed; left:0; right:0; bottom:0; top:auto; height:68px; padding:8px 12px; flex-direction:row; z-index:10; }.brand,.side-bottom { display:none; }.sidebar nav { width:100%; display:flex; justify-content:space-around; }.nav-item,.nav-item.active { width:auto; box-shadow:none; display:grid; gap:0; font-size:12px; text-align:center; }.nav-item span { font-size:20px; }.topbar { padding:17px 18px; }.topbar h1 { font-size:20px; }.runtime-badge,.top-actions .ghost { display:none; }.view { padding:17px 15px 84px; }.scan-hero { padding:26px 22px; min-height:360px; align-items:flex-start; }.hero-copy { max-width:100%; }.radar { opacity:.35; }.progress-panel { position:absolute; left:20px; right:20px; bottom:20px; width:auto; }.metrics { grid-template-columns:1fr 1fr; }.overview-grid { grid-template-columns:1fr; }.config-grid { grid-template-columns:1fr; }.options-card { grid-column:auto; }.section-heading { align-items:flex-start; gap:15px; }.table-tools { flex-wrap:wrap; }.search { width:100%; }.donut-wrap { gap:18px; }.detail-grid { grid-template-columns:1fr; } }
+
+/* 1.2.5 direct targets and inventory actions. */
+.options-card textarea { width:100%; margin-top:6px; border:1px solid #c7d1dc; background:#fbfcfd; color:var(--ink); border-radius:8px; padding:12px; outline:none; resize:vertical; line-height:1.55; font:14px Consolas,monospace; }
+.options-card textarea:focus { border-color:#438f76; box-shadow:0 0 0 3px rgba(74,174,138,.16); }
+.field-help { display:block; margin-top:7px; color:#59677b; font-size:12px; line-height:1.45; }
+.row-actions { display:flex; align-items:center; justify-content:flex-end; gap:7px; white-space:nowrap; }
+.row-moba { display:inline-flex; align-items:center; justify-content:center; min-height:30px; padding:0 9px; border:1px solid #8fc8b3; border-radius:7px; background:#e7f7f0; color:#165d48; font-size:12px; font-weight:800; text-decoration:none; }
+.row-moba:hover,.row-moba:focus-visible { background:#d0f0e4; outline:2px solid transparent; }
+.danger-icon { width:30px; height:30px; border:1px solid #e5a5aa; border-radius:7px; background:#fff0f1; color:#a01f2d; font-size:20px; line-height:1; cursor:pointer; }
+.danger-icon:hover,.danger-icon:focus-visible { background:#ffdfe2; outline:2px solid #c74d59; outline-offset:1px; }
+.moba-link { background:#185f4c !important; border-color:#185f4c !important; color:white !important; }
+.detail-wide { grid-column:1/-1; }
+.danger-zone { padding-top:17px; border-top:1px solid #e8b8bc; }
+.danger-button { border:1px solid #c84c59; border-radius:8px; background:#fff0f1; color:#941e29; padding:10px 14px; font-size:13px; font-weight:800; cursor:pointer; }
+.danger-button:hover,.danger-button:focus-visible { background:#ffdfe2; outline:2px solid #c84c59; outline-offset:2px; }
+html[data-theme="dark"] .options-card textarea { background:#081523; color:var(--ink); border-color:var(--line); }
+html[data-theme="dark"] .field-help { color:#a8b6c8; }
+html[data-theme="dark"] .row-moba { background:#123a31; color:#a9ead4; border-color:#377d68; }
+html[data-theme="dark"] .danger-icon,html[data-theme="dark"] .danger-button { background:#3b1820; color:#ffb5bd; border-color:#9f4752; }
 @media (max-width: 760px) { .nav-item,.nav-item.active { font-size:13px; }.topbar h1 { font-size:20px; }.section-heading { flex-direction:column; }.memory-status { align-self:flex-start; }.host-detail-card { width:calc(100vw - 24px); } }
