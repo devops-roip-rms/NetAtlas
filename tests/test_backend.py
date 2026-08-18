@@ -2,7 +2,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import backend
@@ -12,6 +12,22 @@ class NetAtlasTests(unittest.TestCase):
     def test_address_plan(self):
         plan = backend.build_address_plan({"sites": [{"name": "HQ", "vlans": [{"name": "Users", "cidr": "192.0.2.0/30"}]}]})
         self.assertEqual([x["ip"] for x in plan], ["192.0.2.1", "192.0.2.2"])
+
+    def test_direct_server_targets_without_vlans(self):
+        plan = backend.build_address_plan({
+            "sites": [{"name": "HQ", "vlans": []}],
+            "direct_target_group": "Exceptions",
+            "direct_targets": [
+                {"name": "Database", "ip": "192.0.2.25"},
+                {"name": "Direct server 2", "ip": "198.51.100.9"},
+            ],
+        })
+        self.assertEqual([item["ip"] for item in plan], ["192.0.2.25", "198.51.100.9"])
+        self.assertEqual(plan[0], {"site": "Exceptions", "vlan": "Database", "cidr": "192.0.2.25/32", "ip": "192.0.2.25"})
+
+    def test_invalid_direct_server_target_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Invalid direct target IPv4"):
+            backend.build_address_plan({"sites": [], "direct_targets": [{"name": "Bad", "ip": "not-an-ip"}]})
 
     def test_os_inference(self):
         family, version, confidence, _ = backend.infer_os([22], "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3", [])
@@ -63,6 +79,12 @@ class NetAtlasTests(unittest.TestCase):
         self.assertIn("win01 - SSH=#109#0%192.0.2.41%22%DOMAIN\\winops", text)
         self.assertIn("win01 - RDP=#91#4%192.0.2.41%3389%DOMAIN\\rdpops", text)
 
+    def test_export_falls_back_to_observed_host_ssh_username(self):
+        host = {"site": "HQ", "vlan": "Linux", "ip": "192.0.2.42", "hostname": "rhel02", "services": ["SSH"], "open_ports": [22], "web": [], "os_family": "Linux", "os_version": "RHEL 9.6", "ssh_username": "observedops"}
+        job = backend.ScanJob(id="observed-user", config={}, results=[host], status="complete")
+        text = backend.export_mobaxterm(job).decode("cp1252")
+        self.assertIn("rhel02 - SSH=#109#0%192.0.2.42%22%observedops", text)
+
     def test_selected_only_exports(self):
         linux = {"site": "HQ", "vlan": "Linux", "cidr": "192.0.2.0/24", "ip": "192.0.2.60", "hostname": "rhel01", "hostname_source": "DNS", "role": "Application Server", "services": ["SSH"], "open_ports": [22], "web": [], "os_family": "Linux", "os_version": "RHEL 9.6", "os_confidence": 100, "os_evidence": "SSH", "resource_status": "Collected", "resources": {"cpu_cores": "4"}}
         windows = {"site": "HQ", "vlan": "Windows", "cidr": "192.0.2.0/24", "ip": "192.0.2.61", "hostname": "win01", "hostname_source": "DNS", "role": "Windows Server", "services": ["SSH", "RDP"], "open_ports": [22, 3389], "web": [], "os_family": "Windows", "os_version": "Windows Server 2022", "os_confidence": 100, "os_evidence": "SSH", "resource_status": "Collected", "resources": {"cpu_cores": "8"}}
@@ -101,14 +123,51 @@ class NetAtlasTests(unittest.TestCase):
             backend.enrich_ssh_resources(host, "linuxops", "linuxpass", "winops", "winpass")
         self.assertEqual(calls, [("Linux", "linuxops"), ("Windows", "winops")])
 
+    def test_keyboard_interactive_password_fallback(self):
+        class FakeTransport:
+            authenticated = False
+
+            def is_active(self):
+                return True
+
+            def is_authenticated(self):
+                return self.authenticated
+
+            def auth_interactive(self, username, handler):
+                self.authenticated = handler("", "", [("Password: ", False)]) == ["secret"] and username == "ops"
+
+        class FakeClient:
+            transport = FakeTransport()
+
+            def connect(self, **_kwargs):
+                raise backend.paramiko.AuthenticationException("password disabled")
+
+            def get_transport(self):
+                return self.transport
+
+        self.assertEqual(backend.connect_ssh_password(FakeClient(), "192.0.2.80", "ops", "secret"), "keyboard-interactive")
+
+    def test_authenticated_but_restricted_shell_is_not_reported_as_bad_password(self):
+        host = {"ip": "192.0.2.81", "open_ports": [22], "os_family": "Linux", "ssh_banner": ""}
+        fake_client = MagicMock()
+        with patch.object(backend.paramiko, "SSHClient", return_value=fake_client), \
+             patch.object(backend, "connect_ssh_password", return_value="password"), \
+             patch.object(backend, "apply_linux_ssh", return_value=False), \
+             patch.object(backend, "apply_windows_ssh", return_value=False):
+            success, error = backend.try_ssh_profile(host, "ops", "secret", "Linux")
+        self.assertTrue(success)
+        self.assertEqual(error, "")
+        self.assertIn("inventory commands unavailable", host["ssh_auth_status"])
+
     def test_inventory_csv_contains_hostname_and_resources(self):
-        host = {"site": "HQ", "vlan": "Linux", "cidr": "192.0.2.0/24", "ip": "192.0.2.30", "hostname": "rhel96.example", "hostname_source": "Authenticated SSH", "role": "Linux Server", "services": ["SSH", "HTTPS"], "open_ports": [22, 443], "web": [{"url": "https://192.0.2.30"}], "os_family": "Linux", "os_version": "Red Hat Enterprise Linux 9.6 (Plow)", "os_confidence": 100, "os_evidence": "Authenticated /etc/os-release", "resource_status": "Collected via password-authenticated SSH", "resources": {"cpu_cores": "8", "ram_gb": "31.2", "disk_root_gb": "80.0/100.0"}}
+        host = {"site": "HQ", "vlan": "Linux", "cidr": "192.0.2.0/24", "ip": "192.0.2.30", "hostname": "rhel96.example", "hostname_source": "Authenticated SSH", "role": "Linux Server", "services": ["SSH", "HTTPS"], "open_ports": [22, 443], "web": [{"url": "https://192.0.2.30"}], "os_family": "Linux", "os_version": "Red Hat Enterprise Linux 9.6 (Plow)", "os_confidence": 100, "os_evidence": "Authenticated /etc/os-release", "resource_status": "Collected via password-authenticated SSH", "ssh_username": "linuxops", "ssh_auth_status": "Authenticated", "ssh_auth_method": "keyboard-interactive", "ssh_auth_error": "", "resources": {"cpu_cores": "8", "ram_gb": "31.2", "disk_root_gb": "80.0/100.0"}}
         job = backend.ScanJob(id="inventory", config={}, results=[host], status="complete")
         text = backend.export_inventory_csv(job).decode("utf-8-sig")
         self.assertIn("rhel96.example", text)
         self.assertIn("Red Hat Enterprise Linux 9.6", text)
         self.assertIn("31.2", text)
         self.assertIn("Linux Server", text)
+        self.assertIn("keyboard-interactive", text)
 
     def test_internal_hostname_suffix_is_removed(self):
         self.assertEqual(backend.normalize_hostname("WEB01.tng.topsecret."), "WEB01")
@@ -138,6 +197,12 @@ class NetAtlasTests(unittest.TestCase):
             self.assertTrue(host["role_locked"])
             self.assertEqual(host["seen_count"], 2)
             self.assertEqual(host["services"], ["SSH", "HTTPS"])
+
+            result = backend.delete_remembered_host("HQ", "192.0.2.10")
+            self.assertTrue(result["ok"])
+            self.assertEqual(backend.list_remembered_hosts(), [])
+            with self.assertRaisesRegex(ValueError, "not found"):
+                backend.delete_remembered_host("HQ", "192.0.2.10")
 
 
 if __name__ == "__main__":
