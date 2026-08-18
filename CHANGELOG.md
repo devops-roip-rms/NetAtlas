@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.6
+
+- Replaced MobaXterm browser shortcuts with PuTTY actions and a downloadable per-user Windows protocol-handler setup; the PuTTY command is copied as a fallback and never contains a password.
+- Restored the lightweight 1.2.4 service, RDP, and reverse-DNS discovery path as the default by making deep Nmap inspection opt-in.
+- Preserved valid reverse-DNS names when optional RDP/SMB inspection returns alternate identity data.
+- Reduced follow-up pressure to four SSH and WinRM workers and two Nmap workers, while adding exactly one fresh retry for transient SSH connection or negotiation failures.
+- Added an explicit direct-servers-only mode that ignores populated VLAN lists for that run.
+
 ## 1.2.5
 
 - Renamed the runtime badge to show `NetAtlas version` and the exact running release.

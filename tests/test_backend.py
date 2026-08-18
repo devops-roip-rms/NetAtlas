@@ -1,4 +1,5 @@
 import sys
+import socket
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,6 +26,14 @@ class NetAtlasTests(unittest.TestCase):
         self.assertEqual([item["ip"] for item in plan], ["192.0.2.25", "198.51.100.9"])
         self.assertEqual(plan[0], {"site": "Exceptions", "vlan": "Database", "cidr": "192.0.2.25/32", "ip": "192.0.2.25"})
 
+    def test_direct_only_mode_ignores_populated_vlan_lists(self):
+        plan = backend.build_address_plan({
+            "scan_mode": "direct_only",
+            "sites": [{"name": "HQ", "vlans": [{"name": "Servers", "cidr": "192.0.2.0/30"}]}],
+            "direct_targets": [{"name": "One server", "ip": "198.51.100.25"}],
+        })
+        self.assertEqual([item["ip"] for item in plan], ["198.51.100.25"])
+
     def test_invalid_direct_server_target_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "Invalid direct target IPv4"):
             backend.build_address_plan({"sites": [], "direct_targets": [{"name": "Bad", "ip": "not-an-ip"}]})
@@ -40,6 +49,27 @@ class NetAtlasTests(unittest.TestCase):
         self.assertEqual(family, "Windows")
         self.assertIn("Windows", version)
         self.assertGreaterEqual(confidence, 90)
+
+    def test_lightweight_discovery_keeps_rdp_and_reverse_dns(self):
+        item = {"site": "HQ", "vlan": "Servers", "cidr": "192.0.2.0/24", "ip": "192.0.2.90"}
+        with patch.object(backend, "tcp_open", side_effect=lambda _ip, port, _timeout: port in {22, 3389}), \
+             patch.object(backend, "ssh_banner", return_value="SSH-2.0-OpenSSH_for_Windows_9.5"), \
+             patch.object(backend, "reverse_dns", return_value="win90.example"):
+            host = backend.scan_host(item, 0.2, False)
+        self.assertEqual(host["services"], ["SSH", "RDP"])
+        self.assertEqual(host["open_ports"], [22, 3389])
+        self.assertEqual(host["hostname"], "win90.example")
+        self.assertEqual(host["hostname_source"], "Reverse DNS")
+
+    def test_optional_nmap_identity_does_not_replace_reverse_dns(self):
+        xml = b'''<?xml version="1.0"?><nmaprun><host><ports><port protocol="tcp" portid="3389"><script id="rdp-ntlm-info" output="DNS_Computer_Name: alternate.example&#10;Product_Version: 10.0.20348"/></port></ports></host></nmaprun>'''
+        host = {"ip": "192.0.2.91", "hostname": "stable.example", "hostname_source": "Reverse DNS", "open_ports": [3389], "os_family": "Windows", "os_version": "", "os_confidence": 82, "os_evidence": "Service fingerprint"}
+        process = MagicMock(stdout=xml)
+        with patch.object(backend.shutil, "which", return_value="nmap"), patch.object(backend.subprocess, "run", return_value=process):
+            backend.enrich_nmap(host)
+        self.assertEqual(host["hostname"], "stable.example")
+        self.assertEqual(host["hostname_source"], "Reverse DNS")
+        self.assertIn("Windows Server 2022", host["os_version"])
 
     def test_mobaxterm_export(self):
         host = {"site": "HQ", "vlan": "Servers", "ip": "192.0.2.10", "hostname": "app01", "services": ["SSH", "HTTPS"], "open_ports": [22, 443], "web": [{"url": "https://192.0.2.10"}], "os_family": "Linux", "os_version": "Ubuntu 24.04"}
@@ -158,6 +188,19 @@ class NetAtlasTests(unittest.TestCase):
         self.assertTrue(success)
         self.assertEqual(error, "")
         self.assertIn("inventory commands unavailable", host["ssh_auth_status"])
+
+    def test_transient_ssh_failure_gets_one_fresh_retry(self):
+        host = {"ip": "192.0.2.82", "open_ports": [22], "os_family": "Linux", "ssh_banner": ""}
+        clients = [MagicMock(), MagicMock()]
+        with patch.object(backend.paramiko, "SSHClient", side_effect=clients), \
+             patch.object(backend, "connect_ssh_password", side_effect=[socket.timeout("busy"), "password"]), \
+             patch.object(backend, "apply_linux_ssh", return_value=True), \
+             patch.object(backend.time, "sleep") as sleeper:
+            success, error = backend.try_ssh_profile(host, "ops", "secret", "Linux")
+        self.assertTrue(success)
+        self.assertEqual(error, "")
+        self.assertEqual(len(clients), 2)
+        sleeper.assert_called_once()
 
     def test_inventory_csv_contains_hostname_and_resources(self):
         host = {"site": "HQ", "vlan": "Linux", "cidr": "192.0.2.0/24", "ip": "192.0.2.30", "hostname": "rhel96.example", "hostname_source": "Authenticated SSH", "role": "Linux Server", "services": ["SSH", "HTTPS"], "open_ports": [22, 443], "web": [{"url": "https://192.0.2.30"}], "os_family": "Linux", "os_version": "Red Hat Enterprise Linux 9.6 (Plow)", "os_confidence": 100, "os_evidence": "Authenticated /etc/os-release", "resource_status": "Collected via password-authenticated SSH", "ssh_username": "linuxops", "ssh_auth_status": "Authenticated", "ssh_auth_method": "keyboard-interactive", "ssh_auth_error": "", "resources": {"cpu_cores": "8", "ram_gb": "31.2", "disk_root_gb": "80.0/100.0"}}

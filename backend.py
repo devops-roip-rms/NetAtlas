@@ -37,7 +37,7 @@ WEB_DIR = APP_DIR / "web"
 DATA_DIR = Path(os.environ.get("NETATLAS_DATA_DIR", APP_DIR / "data")).resolve()
 DATA_DIR.mkdir(exist_ok=True)
 HOSTS_DB = DATA_DIR / "hosts.db"
-APP_VERSION = "1.2.5"
+APP_VERSION = "1.2.6"
 SENSITIVE_CONFIG_KEYS = {"ssh_password", "linux_ssh_password", "windows_ssh_password", "password"}
 
 PRIMARY_PORTS = {22: "SSH", 80: "HTTP", 443: "HTTPS", 3389: "RDP"}
@@ -160,7 +160,11 @@ def build_address_plan(config: dict) -> list[dict]:
     plan: list[dict] = []
     seen: set[tuple[str, str]] = set()
     max_addresses = int(config.get("max_addresses", 65536))
-    for site in config.get("sites", []):
+    scan_mode = clean_text(config.get("scan_mode"), 24).lower() or "combined"
+    if scan_mode not in {"combined", "direct_only"}:
+        raise ValueError("Scan mode must be combined or direct_only")
+    sites = [] if scan_mode == "direct_only" else config.get("sites", [])
+    for site in sites:
         site_name = clean_text(site.get("name"), 60) or "Site"
         for vlan in site.get("vlans", []):
             cidr = clean_text(vlan.get("cidr"), 64)
@@ -384,7 +388,7 @@ def enrich_nmap(host: dict) -> None:
             if script_id == "rdp-ntlm-info":
                 hostname = script_field(output, "DNS_Computer_Name") or script_field(output, "NetBIOS_Computer_Name")
                 version = script_field(output, "Product_Version")
-                if hostname:
+                if hostname and not host.get("hostname"):
                     host["hostname"] = normalize_hostname(hostname)
                     host["hostname_source"] = "RDP identity"
                 if version:
@@ -395,7 +399,7 @@ def enrich_nmap(host: dict) -> None:
             elif script_id == "smb-os-discovery":
                 hostname = script_field(output, "Computer name") or script_field(output, "FQDN")
                 os_name = script_field(output, "OS")
-                if hostname:
+                if hostname and not host.get("hostname"):
                     host["hostname"] = normalize_hostname(hostname)
                     host["hostname_source"] = "SMB identity"
                 if os_name:
@@ -485,12 +489,23 @@ def ssh_exception_text(exc: Exception) -> str:
     return detail or exc.__class__.__name__
 
 
+def transient_ssh_error(exc: Exception) -> bool:
+    """Return True only for failures where one fresh connection retry can help."""
+    if isinstance(exc, (socket.timeout, TimeoutError, ConnectionError)):
+        return True
+    if paramiko is None:
+        return False
+    if isinstance(exc, (paramiko.AuthenticationException, paramiko.ssh_exception.IncompatiblePeer)):
+        return False
+    return isinstance(exc, (paramiko.SSHException, paramiko.ssh_exception.NoValidConnectionsError))
+
+
 def connect_ssh_password(client: object, ip: str, username: str, password: str) -> str:
     """Connect with password auth, then retry keyboard-interactive password prompts."""
     try:
         client.connect(
             hostname=ip, port=22, username=username, password=password,
-            timeout=12, banner_timeout=15, auth_timeout=15,
+            timeout=8, banner_timeout=10, auth_timeout=10,
             allow_agent=False, look_for_keys=False,
         )
         return "password"
@@ -518,29 +533,35 @@ def connect_ssh_password(client: object, ip: str, username: str, password: str) 
 def try_ssh_profile(host: dict, username: str, password: str, profile: str) -> tuple[bool, str]:
     if not username or not password:
         return False, "not configured"
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    try:
-        auth_method = connect_ssh_password(client, host["ip"], username, password)
-        host["ssh_username"] = username
-        host["ssh_auth_status"] = "Authenticated"
-        host["ssh_auth_method"] = auth_method
-        host["ssh_auth_error"] = ""
-        windows_first = profile == "Windows" or host.get("os_family") == "Windows" or "windows" in host.get("ssh_banner", "").lower()
-        if windows_first:
-            enriched = apply_windows_ssh(host, client) or apply_linux_ssh(host, client)
-        else:
-            enriched = apply_linux_ssh(host, client) or apply_windows_ssh(host, client)
-        if enriched:
-            host["credential_profile"] = f"{profile} SSH profile"
+    for attempt in range(2):
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            auth_method = connect_ssh_password(client, host["ip"], username, password)
+            host["ssh_username"] = username
+            host["ssh_auth_status"] = "Authenticated"
+            host["ssh_auth_method"] = auth_method
+            host["ssh_auth_error"] = ""
+            windows_first = profile == "Windows" or host.get("os_family") == "Windows" or "windows" in host.get("ssh_banner", "").lower()
+            if windows_first:
+                enriched = apply_windows_ssh(host, client) or apply_linux_ssh(host, client)
+            else:
+                enriched = apply_linux_ssh(host, client) or apply_windows_ssh(host, client)
+            if enriched:
+                host["credential_profile"] = f"{profile} SSH profile"
+                return True, ""
+            host["resource_status"] = "SSH authenticated, but inventory commands were unavailable or restricted"
+            host["ssh_auth_status"] = "Authenticated; inventory commands unavailable"
             return True, ""
-        host["resource_status"] = "SSH authenticated, but inventory commands were unavailable or restricted"
-        host["ssh_auth_status"] = "Authenticated; inventory commands unavailable"
-        return True, ""
-    except Exception as exc:
-        return False, ssh_exception_text(exc)
-    finally:
-        client.close()
+        except Exception as exc:
+            if attempt == 0 and transient_ssh_error(exc):
+                time.sleep(0.2)
+                continue
+            suffix = " after 2 attempts" if attempt else ""
+            return False, ssh_exception_text(exc) + suffix
+        finally:
+            client.close()
+    return False, "SSH connection failed after 2 attempts"
 
 
 def enrich_ssh_resources(host: dict, linux_user: str, linux_password: str, windows_user: str, windows_password: str) -> None:
@@ -816,7 +837,7 @@ def run_scan(job: ScanJob) -> None:
 
         if not job.cancelled and job.config.get("deep_scan") and shutil.which("nmap"):
             job.current_phase = "Enriching OS and service fingerprints"
-            with ThreadPoolExecutor(max_workers=min(6, workers)) as pool:
+            with ThreadPoolExecutor(max_workers=min(2, workers)) as pool:
                 list(pool.map(enrich_nmap, job.results))
 
         linux_user = clean_text(job.config.get("linux_ssh_username"), 100)
@@ -833,12 +854,12 @@ def run_scan(job: ScanJob) -> None:
             job.current_phase = "Collecting Linux and Windows resources over SSH"
             linux_password = str(job.secrets.get("linux_ssh_password", ""))
             windows_password = str(job.secrets.get("windows_ssh_password", ""))
-            with ThreadPoolExecutor(max_workers=min(12, workers)) as pool:
+            with ThreadPoolExecutor(max_workers=min(4, workers)) as pool:
                 list(pool.map(lambda h: enrich_ssh_resources(h, linux_user, linux_password, windows_user, windows_password), job.results))
 
         if not job.cancelled and job.config.get("windows_resources"):
             job.current_phase = "Collecting Windows resources over WinRM"
-            with ThreadPoolExecutor(max_workers=min(8, workers)) as pool:
+            with ThreadPoolExecutor(max_workers=min(4, workers)) as pool:
                 list(pool.map(lambda h: enrich_windows_resources(h, bool(job.config.get("winrm_ssl"))), job.results))
 
         for host in job.results:

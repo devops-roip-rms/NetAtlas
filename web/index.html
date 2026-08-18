@@ -151,7 +151,7 @@
             <label class="range-label"><span>Concurrency <b id="concurrencyValue">128</b></span><input id="concurrency" type="range" min="16" max="256" step="16" value="128"></label>
             <label>Per-port timeout<select id="timeout"><option value="0.3">Fast · 0.3 sec</option><option value="0.5" selected>Balanced · 0.5 sec</option><option value="1">Careful · 1 sec</option><option value="2">WAN · 2 sec</option></select></label>
             <label class="toggle"><input id="auxiliary" type="checkbox" checked><i></i><span><b>OS helper ports</b><small>Also check SMB and WinRM</small></span></label>
-            <label class="toggle"><input id="deepScan" type="checkbox" checked><i></i><span><b>Nmap deep inspection</b><small>Exact Windows build metadata when available</small></span></label>
+            <label class="toggle"><input id="deepScan" type="checkbox"><i></i><span><b>Nmap deep inspection</b><small>Optional, slower follow-up for exact build metadata</small></span></label>
             <div class="divider"></div>
             <p class="mini-title">Authenticated enrichment</p>
               <label class="toggle" id="sshAuthOption"><input id="sshResources" type="checkbox"><i></i><span><b>Separate SSH profiles</b><small id="sshAuthHelp">Different Linux and Windows credentials</small></span></label>
@@ -164,6 +164,7 @@
             <label class="toggle sub-toggle hidden" id="sslToggle"><input id="winrmSsl" type="checkbox"><i></i><span><b>Use WinRM HTTPS</b></span></label>
             <div class="divider"></div>
             <p class="mini-title">Direct server targets</p>
+            <label class="toggle direct-only-toggle"><input id="directOnly" type="checkbox"><i></i><span><b>Direct servers only</b><small>Ignore both VLAN lists for this run</small></span></label>
             <label>Target group / site<input id="directTargetGroup" value="Direct targets" maxlength="60"></label>
             <label>Individual IPv4 addresses<textarea id="directTargets" rows="5" spellcheck="false" placeholder="10.10.10.25&#10;Database, 10.10.10.26"></textarea><small class="field-help">One IP per line. An optional label can precede the IP.</small></label>
             <div class="estimate"><span>Estimated scope</span><strong id="scopeEstimate">5,080 addresses</strong></div>

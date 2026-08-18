@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$Archive,
-    [string]$Tag = "netatlas:1.2.5",
+    [string]$Tag = "netatlas:1.2.6",
     [int]$Port = 8765,
     [string]$DataPath = ".\netatlas-data",
     [string]$BindAddress = "0.0.0.0"

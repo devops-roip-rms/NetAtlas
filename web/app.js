@@ -58,19 +58,26 @@ function parseDirectTargets(text) {
 
 function estimate() {
   let count = 0, vlans = 0;
-  [$("#siteAVlans").value, $("#siteBVlans").value].forEach(text => parseVlans(text).forEach(v => {
-    const slash = v.cidr.split("/"), bits = slash.length > 1 ? Number(slash[1]) : 32;
-    if (bits >= 20 && bits <= 30) count += Math.max(0, 2 ** (32 - bits) - 2);
-    else if (bits === 31) count += 2;
-    else if (bits === 32) count += 1;
-    vlans++;
-  }));
+  const directOnly = $("#directOnly").checked;
+  if (!directOnly) {
+    [$("#siteAVlans").value, $("#siteBVlans").value].forEach(text => parseVlans(text).forEach(v => {
+      const slash = v.cidr.split("/"), bits = slash.length > 1 ? Number(slash[1]) : 32;
+      if (bits >= 20 && bits <= 30) count += Math.max(0, 2 ** (32 - bits) - 2);
+      else if (bits === 31) count += 2;
+      else if (bits === 32) count += 1;
+      vlans++;
+    }));
+  }
   const direct = parseDirectTargets($("#directTargets").value).length;
   count += direct;
   $("#scopeEstimate").textContent = `${count.toLocaleString()} ${count === 1 ? "address" : "addresses"}`;
-  $("#addressEstimate").textContent = `${vlans} ${vlans === 1 ? "VLAN" : "VLANs"}${direct ? ` + ${direct} direct` : ""} · up to ${count.toLocaleString()} ${count === 1 ? "host" : "hosts"}`;
+  $("#addressEstimate").textContent = directOnly ? `${direct} direct ${direct === 1 ? "server" : "servers"}` : `${vlans} ${vlans === 1 ? "VLAN" : "VLANs"}${direct ? ` + ${direct} direct` : ""} · up to ${count.toLocaleString()} ${count === 1 ? "host" : "hosts"}`;
+  $$(".config-card").forEach(card => card.classList.toggle("scope-disabled", directOnly));
+  $$(".config-card input, .config-card textarea").forEach(control => control.disabled = directOnly);
+  $("#startScanButton").firstChild.textContent = directOnly ? "Scan direct servers " : "Start discovery ";
 }
-[$("#siteAVlans"), $("#siteBVlans"), $("#directTargets")].forEach(x => x.addEventListener("input", estimate)); estimate();
+[$("#siteAVlans"), $("#siteBVlans"), $("#directTargets")].forEach(x => x.addEventListener("input", estimate));
+$("#directOnly").addEventListener("change", estimate); estimate();
 $("#concurrency").addEventListener("input", e => $("#concurrencyValue").textContent = e.target.value);
 $("#sshResources").addEventListener("change", e => $("#sshFields").classList.toggle("show", e.target.checked));
 $("#windowsResources").addEventListener("change", e => $("#sslToggle").classList.toggle("hidden", !e.target.checked));
@@ -99,7 +106,9 @@ async function checkHealth() {
 }
 
 function scanConfig() {
+  const directOnly = $("#directOnly").checked;
   return {
+    scan_mode: directOnly ? "direct_only" : "combined",
     sites: [
       {name: $("#siteAName").value.trim(), vlans: parseVlans($("#siteAVlans").value)},
       {name: $("#siteBName").value.trim(), vlans: parseVlans($("#siteBVlans").value)}
@@ -123,6 +132,7 @@ $("#scanForm").addEventListener("submit", async (event) => {
     const linuxPartial = Boolean(config.linux_ssh_username) !== Boolean(config.linux_ssh_password);
     const windowsPartial = Boolean(config.windows_ssh_username) !== Boolean(config.windows_ssh_password);
     const profileReady = (config.linux_ssh_username && config.linux_ssh_password) || (config.windows_ssh_username && config.windows_ssh_password);
+    if (config.scan_mode === "direct_only" && !config.direct_targets.length) throw new Error("Add at least one direct server IP for a direct-only scan.");
     if (config.ssh_resources && (linuxPartial || windowsPartial)) throw new Error("Each SSH profile needs both a username and password.");
     if (config.ssh_resources && !profileReady) throw new Error("Configure at least one complete Linux or Windows SSH profile.");
     const job = await api("/api/scans", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(config)});
@@ -185,16 +195,29 @@ function sshUsernameFor(host) {
   return config.linux_ssh_username || config.windows_ssh_username || "";
 }
 
-function sshUri(host) {
+function puttyUri(host) {
   const username = sshUsernameFor(host);
   const authority = username ? `${encodeURIComponent(username)}@${host.ip}` : host.ip;
-  return `ssh://${authority}:22`;
+  return `netatlas-putty://${authority}:22`;
+}
+
+function puttyCommand(host) {
+  const username = sshUsernameFor(host);
+  const destination = username ? `${username}@${host.ip}` : host.ip;
+  return `putty.exe -ssh "${destination}" -P 22`;
 }
 
 function rowSshLink(host) {
   if (!(host.services || []).includes("SSH")) return "";
-  return `<a class="row-moba" href="${esc(sshUri(host))}" title="Open SSH in MobaXterm or your Windows SSH handler" aria-label="Open SSH to ${esc(host.hostname || host.ip)}">SSH</a>`;
+  return `<a class="row-putty" href="${esc(puttyUri(host))}" data-putty-link data-putty-command="${esc(puttyCommand(host))}" title="Open in PuTTY; the command is copied as a fallback" aria-label="Open PuTTY to ${esc(host.hostname || host.ip)}">PuTTY</a>`;
 }
+
+document.addEventListener("click", event => {
+  const link = event.target.closest("[data-putty-link]");
+  if (!link) return;
+  navigator.clipboard?.writeText(link.dataset.puttyCommand).catch(() => {});
+  toast("Opening PuTTY. The PuTTY command was also copied.");
+});
 
 function resourceText(host) {
   const r = host.resources || {}, parts = [];
@@ -289,7 +312,10 @@ function openHost(ip, site) {
 
 function showHost(host, remembered = false) {
   const links = [];
-  if ((host.services || []).includes("SSH")) links.push(`<a class="detail-link moba-link" href="${esc(sshUri(host))}">Open SSH in MobaXterm ↗</a>`);
+  if ((host.services || []).includes("SSH")) {
+    links.push(`<a class="detail-link putty-link" href="${esc(puttyUri(host))}" data-putty-link data-putty-command="${esc(puttyCommand(host))}">Open in PuTTY ↗</a>`);
+    links.push('<a class="detail-link" href="/register-putty-handler.ps1" download>Set up PuTTY links ↓</a>');
+  }
   if (host.services.includes("HTTP")) links.push(`<a class="detail-link" href="http://${esc(host.ip)}" target="_blank" rel="noreferrer">Open HTTP ↗</a>`);
   if (host.services.includes("HTTPS")) links.push(`<a class="detail-link" href="https://${esc(host.ip)}" target="_blank" rel="noreferrer">Open HTTPS ↗</a>`);
   const resources = Object.entries(host.resources || {}).map(([key, value]) => `<div class="detail-stat"><small>${esc(key.replaceAll("_", " "))}</small><strong>${esc(value)}</strong></div>`).join("");
