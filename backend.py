@@ -37,7 +37,7 @@ WEB_DIR = APP_DIR / "web"
 DATA_DIR = Path(os.environ.get("NETATLAS_DATA_DIR", APP_DIR / "data")).resolve()
 DATA_DIR.mkdir(exist_ok=True)
 HOSTS_DB = DATA_DIR / "hosts.db"
-APP_VERSION = "1.2.6"
+APP_VERSION = "1.2.7"
 SENSITIVE_CONFIG_KEYS = {"ssh_password", "linux_ssh_password", "windows_ssh_password", "password"}
 
 PRIMARY_PORTS = {22: "SSH", 80: "HTTP", 443: "HTTPS", 3389: "RDP"}
@@ -70,26 +70,12 @@ def normalize_hostname(value: object) -> str:
 
 
 def infer_host_role(host: dict) -> str:
-    """Infer a useful role label without claiming more precision than the evidence supports."""
-    hostname = normalize_hostname(host.get("hostname")).lower()
-    short = hostname.split(".", 1)[0]
+    """Use the resolved hostname as the default role, with a service fallback."""
+    hostname = normalize_hostname(host.get("hostname"))
+    if hostname:
+        return hostname
     services = set(host.get("services", []))
     open_ports = set(host.get("open_ports", []))
-    patterns = (
-        (r"(^|[-_])(dc|adc)\d*($|[-_])", "Domain Controller"),
-        (r"(^|[-_])(db|sql|ora|oracle|postgres|pgsql|mysql)\d*($|[-_])", "Database Server"),
-        (r"(^|[-_])(web|www|nginx|apache)\d*($|[-_])", "Web Server"),
-        (r"(^|[-_])(app|api|middleware|mw)\d*($|[-_])", "Application Server"),
-        (r"(^|[-_])(fs|file|nas)\d*($|[-_])", "File Server"),
-        (r"(^|[-_])(vcenter|esx|esxi|hyperv|hv)\d*($|[-_])", "Virtualization Host"),
-        (r"(^|[-_])(backup|veeam)\d*($|[-_])", "Backup Server"),
-        (r"(^|[-_])(monitor|monitoring|zabbix|nagios|prometheus)\d*($|[-_])", "Monitoring Server"),
-        (r"(^|[-_])(jump|bastion)\d*($|[-_])", "Jump Host"),
-        (r"(^|[-_])(print|printer)\d*($|[-_])", "Print Server"),
-    )
-    for pattern, role in patterns:
-        if re.search(pattern, short):
-            return role
     if 445 in open_ports:
         return "File / Windows Server"
     if {"HTTP", "HTTPS"} & services:
@@ -135,6 +121,7 @@ class ScanJob:
         payload["config"] = {key: value for key, value in payload.get("config", {}).items() if key not in SENSITIVE_CONFIG_KEYS}
         payload["progress"] = round((self.completed / self.total * 100), 1) if self.total else 0
         payload["summary"] = summarize(self.results)
+        payload["breakdown"] = inventory_breakdown(self.results)
         payload.pop("cancelled", None)
         payload.pop("secrets", None)
         return payload
@@ -153,6 +140,41 @@ def summarize(results: list[dict]) -> dict:
         "windows": sum(r.get("os_family") == "Windows" for r in results),
         "linux": sum(r.get("os_family") == "Linux" for r in results),
         "unknown": sum(r.get("os_family") not in {"Windows", "Linux"} for r in results),
+    }
+
+
+def inventory_breakdown(results: list[dict]) -> dict:
+    sites: dict[str, dict[str, float | int]] = {}
+    operating_systems: dict[str, int] = {}
+    vlans: dict[tuple[str, str], int] = {}
+    for host in results:
+        site = clean_text(host.get("site"), 60) or "Unassigned"
+        vlan = clean_text(host.get("vlan"), 60) or "Unassigned"
+        os_name = clean_text(host.get("os_version") or host.get("os_family"), 180) or "Unknown"
+        operating_systems[os_name] = operating_systems.get(os_name, 0) + 1
+        vlans[(site, vlan)] = vlans.get((site, vlan), 0) + 1
+        totals = sites.setdefault(site, {"servers": 0, "cpu_cores": 0.0, "ram_gb": 0.0, "disk_gb": 0.0, "resource_hosts": 0})
+        totals["servers"] += 1
+        resources = host.get("resources") or {}
+
+        def number(value: object) -> float:
+            match = re.search(r"-?\d+(?:\.\d+)?", str(value or ""))
+            return float(match.group(0)) if match else 0.0
+
+        cpu = number(resources.get("cpu_cores"))
+        ram = number(resources.get("ram_gb"))
+        disk_value = resources.get("disk_c_gb") or resources.get("disk_root_gb")
+        disk_text = str(disk_value or "")
+        disk = number(disk_text.split("/", 1)[-1] if "/" in disk_text else disk_text)
+        if cpu or ram or disk:
+            totals["resource_hosts"] += 1
+        totals["cpu_cores"] += cpu
+        totals["ram_gb"] += ram
+        totals["disk_gb"] += disk
+    return {
+        "sites": [{"site": site, **values} for site, values in sorted(sites.items(), key=lambda item: item[0].lower())],
+        "operating_systems": [{"name": name, "servers": count} for name, count in sorted(operating_systems.items(), key=lambda item: (-item[1], item[0].lower()))],
+        "vlans": [{"site": site, "vlan": vlan, "servers": count} for (site, vlan), count in sorted(vlans.items(), key=lambda item: (item[0][0].lower(), item[0][1].lower()))],
     }
 
 
@@ -642,6 +664,7 @@ def init_hosts_db() -> None:
                 hostname TEXT NOT NULL,
                 role TEXT NOT NULL,
                 role_locked INTEGER NOT NULL DEFAULT 0,
+                site_locked INTEGER NOT NULL DEFAULT 0,
                 vlan TEXT NOT NULL DEFAULT '',
                 cidr TEXT NOT NULL DEFAULT '',
                 services_json TEXT NOT NULL DEFAULT '[]',
@@ -666,9 +689,16 @@ def init_hosts_db() -> None:
             """
         )
         existing_columns = {row["name"] for row in connection.execute("PRAGMA table_info(remembered_hosts)")}
-        for column in ("ssh_username", "ssh_auth_status", "ssh_auth_method", "ssh_auth_error"):
+        migrations = {
+            "ssh_username": "TEXT NOT NULL DEFAULT ''",
+            "ssh_auth_status": "TEXT NOT NULL DEFAULT ''",
+            "ssh_auth_method": "TEXT NOT NULL DEFAULT ''",
+            "ssh_auth_error": "TEXT NOT NULL DEFAULT ''",
+            "site_locked": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for column, declaration in migrations.items():
             if column not in existing_columns:
-                connection.execute(f"ALTER TABLE remembered_hosts ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+                connection.execute(f"ALTER TABLE remembered_hosts ADD COLUMN {column} {declaration}")
         connection.execute("CREATE INDEX IF NOT EXISTS remembered_hosts_hostname ON remembered_hosts(hostname)")
         connection.execute("CREATE INDEX IF NOT EXISTS remembered_hosts_last_seen ON remembered_hosts(last_seen DESC)")
         connection.commit()
@@ -688,6 +718,15 @@ def remember_job_hosts(job: ScanJob) -> int:
                 continue
             observed = host.get("discovered_at") or job.finished_at or utc_now()
             role = clean_text(host.get("role") or infer_host_role(host), 80)
+            site = clean_text(host.get("site"), 60)
+            cidr = clean_text(host.get("cidr"), 64)
+            if cidr.endswith("/32"):
+                locked = connection.execute(
+                    "SELECT site FROM remembered_hosts WHERE ip=? AND site_locked=1 AND cidr LIKE '%/32' ORDER BY last_seen DESC LIMIT 1",
+                    (clean_text(host.get("ip"), 64),),
+                ).fetchone()
+                if locked:
+                    site = locked["site"]
             connection.execute(
                 """
                 INSERT INTO remembered_hosts (
@@ -719,8 +758,8 @@ def remember_job_hosts(job: ScanJob) -> int:
                     seen_count=remembered_hosts.seen_count+1
                 """,
                 (
-                    clean_text(host.get("site"), 60), clean_text(host.get("ip"), 64), host["hostname"], role,
-                    clean_text(host.get("vlan"), 60), clean_text(host.get("cidr"), 64),
+                    site, clean_text(host.get("ip"), 64), host["hostname"], role,
+                    clean_text(host.get("vlan"), 60), cidr,
                     json.dumps(host.get("services", [])), json.dumps(host.get("open_ports", [])),
                     json.dumps(host.get("web", [])), clean_text(host.get("os_family"), 40),
                     clean_text(host.get("os_version"), 180), int(host.get("os_confidence") or 0),
@@ -759,6 +798,7 @@ def list_remembered_hosts() -> list[dict]:
         host["web"] = decode_json_field(host.pop("web_json"), [])
         host["resources"] = decode_json_field(host.pop("resources_json"), {})
         host["role_locked"] = bool(host.get("role_locked"))
+        host["site_locked"] = bool(host.get("site_locked"))
         normalize_host_record(host)
         hosts.append(host)
     return hosts
@@ -784,6 +824,34 @@ def update_remembered_role(site: object, ip: object, role: object) -> dict:
     finally:
         connection.close()
     return {"site": site_name, "ip": address, "role": role_name, "role_locked": True}
+
+
+def update_remembered_site(site: object, ip: object, new_site: object) -> dict:
+    old_site = clean_text(site, 60)
+    address = clean_text(ip, 64)
+    site_name = clean_text(new_site, 60)
+    if not old_site or not address or not site_name:
+        raise ValueError("Current site, IP address and new site are required")
+    ipaddress.ip_address(address)
+    init_hosts_db()
+    connection = hosts_db_connection()
+    try:
+        row = connection.execute("SELECT cidr FROM remembered_hosts WHERE site=? AND ip=?", (old_site, address)).fetchone()
+        if not row:
+            raise ValueError("Remembered host was not found")
+        if not clean_text(row["cidr"], 64).endswith("/32"):
+            raise ValueError("Only direct server targets can be moved to another site")
+        try:
+            connection.execute(
+                "UPDATE remembered_hosts SET site=?, site_locked=1 WHERE site=? AND ip=?",
+                (site_name, old_site, address),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("That site already contains this IP address") from exc
+        connection.commit()
+    finally:
+        connection.close()
+    return {"old_site": old_site, "site": site_name, "ip": address, "site_locked": True}
 
 
 def delete_remembered_host(site: object, ip: object) -> dict:
@@ -907,6 +975,10 @@ def browser_session(host: dict, url: str) -> str:
 
 
 def selected_export_hosts(job: ScanJob, selection: object) -> list[dict]:
+    return selected_hosts_from_list(job.results, selection, "this scan")
+
+
+def selected_hosts_from_list(source: list[dict], selection: object, source_name: str) -> list[dict]:
     if not isinstance(selection, list) or not selection:
         raise ValueError("Select at least one host to export")
     keys: set[tuple[str, str]] = set()
@@ -917,9 +989,9 @@ def selected_export_hosts(job: ScanJob, selection: object) -> list[dict]:
         if not site or not ip:
             raise ValueError("Each selected host needs a site and IP address")
         keys.add((site, ip))
-    hosts = [host for host in job.results if (clean_text(host.get("site"), 120), clean_text(host.get("ip"), 64)) in keys]
+    hosts = [host for host in source if (clean_text(host.get("site"), 120), clean_text(host.get("ip"), 64)) in keys]
     if not hosts:
-        raise ValueError("None of the selected hosts belong to this scan")
+        raise ValueError(f"None of the selected hosts belong to {source_name}")
     return hosts
 
 
@@ -1052,9 +1124,31 @@ class Handler(BaseHTTPRequestHandler):
                 payload = self.json_body()
                 self.send_json(update_remembered_role(payload.get("site"), payload.get("ip"), payload.get("role")))
                 return
+            if path == "/api/remembered-hosts/site":
+                payload = self.json_body()
+                self.send_json(update_remembered_site(payload.get("site"), payload.get("ip"), payload.get("new_site")))
+                return
             if path == "/api/remembered-hosts/delete":
                 payload = self.json_body()
                 self.send_json(delete_remembered_host(payload.get("site"), payload.get("ip")))
+                return
+            if path == "/api/remembered-hosts/export":
+                payload = self.json_body()
+                hosts = selected_hosts_from_list(list_remembered_hosts(), payload.get("hosts"), "remembered inventory")
+                export_format = clean_text(payload.get("format"), 20).lower()
+                linux_ssh_user = clean_text(payload.get("linux_ssh_user"), 100)
+                windows_ssh_user = clean_text(payload.get("windows_ssh_user"), 100)
+                rdp_user = clean_text(payload.get("rdp_user"), 100)
+                remembered_job = ScanJob(id="remembered", config={}, results=hosts, status="complete")
+                timestamp = datetime.now().strftime('%Y%m%d-%H%M')
+                if export_format == "mxtsessions":
+                    data = export_mobaxterm(remembered_job, linux_ssh_user, rdp_user, windows_ssh_user, hosts)
+                    self.send_download(data, f"NetAtlas-remembered-{timestamp}.mxtsessions")
+                elif export_format == "csv":
+                    data = export_csv(remembered_job, linux_ssh_user, rdp_user, windows_ssh_user, hosts)
+                    self.send_download(data, f"NetAtlas-remembered-{timestamp}.csv", "text/csv; charset=utf-8")
+                else:
+                    raise ValueError("Remembered export format must be mxtsessions or csv")
                 return
             export_match = re.fullmatch(r"/api/scans/([a-f0-9]+)/export", path)
             if export_match:

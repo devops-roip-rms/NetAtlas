@@ -217,9 +217,25 @@ class NetAtlasTests(unittest.TestCase):
         self.assertEqual(backend.normalize_hostname("web01.example.org"), "web01.example.org")
 
     def test_role_inference(self):
-        self.assertEqual(backend.infer_host_role({"hostname": "dc01", "services": ["RDP"], "open_ports": [3389], "os_family": "Windows"}), "Domain Controller")
-        self.assertEqual(backend.infer_host_role({"hostname": "sql-01", "services": ["SSH"], "open_ports": [22], "os_family": "Linux"}), "Database Server")
-        self.assertEqual(backend.infer_host_role({"hostname": "generic", "services": ["HTTPS"], "open_ports": [443], "os_family": "Unknown"}), "Web Service")
+        self.assertEqual(backend.infer_host_role({"hostname": "dc01", "services": ["RDP"], "open_ports": [3389], "os_family": "Windows"}), "dc01")
+        self.assertEqual(backend.infer_host_role({"hostname": "sql-01.tng.topsecret", "services": ["SSH"], "open_ports": [22], "os_family": "Linux"}), "sql-01")
+        self.assertEqual(backend.infer_host_role({"hostname": "", "services": ["HTTPS"], "open_ports": [443], "os_family": "Unknown"}), "Web Service")
+
+    def test_inventory_breakdown_keeps_sites_and_vlans_distinct(self):
+        hosts = [
+            {"site": "Site A", "vlan": "VLAN 95", "os_version": "RHEL 9.6", "resources": {"cpu_cores": "4", "ram_gb": "16", "disk_root_gb": "30/100"}},
+            {"site": "Site A", "vlan": "VLAN 95", "os_version": "RHEL 9.6", "resources": {"cpu_cores": 8, "ram_gb": 32, "disk_root_gb": "40/200"}},
+            {"site": "Site B", "vlan": "VLAN 95", "os_version": "Windows Server 2022", "resources": {"cpu_cores": 16, "ram_gb": 64, "disk_c_gb": 500}},
+        ]
+        breakdown = backend.inventory_breakdown(hosts)
+        self.assertEqual(breakdown["operating_systems"], [{"name": "RHEL 9.6", "servers": 2}, {"name": "Windows Server 2022", "servers": 1}])
+        self.assertEqual(breakdown["vlans"], [
+            {"site": "Site A", "vlan": "VLAN 95", "servers": 2},
+            {"site": "Site B", "vlan": "VLAN 95", "servers": 1},
+        ])
+        self.assertEqual(breakdown["sites"][0]["cpu_cores"], 12.0)
+        self.assertEqual(breakdown["sites"][0]["ram_gb"], 48.0)
+        self.assertEqual(breakdown["sites"][0]["disk_gb"], 300.0)
 
     def test_remembered_hosts_merge_only_resolved_names_and_preserve_manual_role(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(backend, "HOSTS_DB", Path(directory) / "hosts.db"):
@@ -246,6 +262,29 @@ class NetAtlasTests(unittest.TestCase):
             self.assertEqual(backend.list_remembered_hosts(), [])
             with self.assertRaisesRegex(ValueError, "not found"):
                 backend.delete_remembered_host("HQ", "192.0.2.10")
+
+    def test_direct_server_site_assignment_survives_later_scans(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(backend, "HOSTS_DB", Path(directory) / "hosts.db"):
+            direct = {"site": "Direct targets", "vlan": "Database", "cidr": "192.0.2.25/32", "ip": "192.0.2.25", "hostname": "db25", "hostname_source": "Reverse DNS", "services": ["SSH"], "open_ports": [22], "web": [], "os_family": "Linux", "os_version": "RHEL 9.6", "os_confidence": 95, "os_evidence": "SSH", "resources": {}, "resource_status": "Not collected", "discovered_at": "2026-10-05T08:00:00+00:00"}
+            backend.remember_job_hosts(backend.ScanJob(id="first", config={}, results=[direct], status="complete"))
+            updated = backend.update_remembered_site("Direct targets", "192.0.2.25", "Site A")
+            self.assertEqual(updated["site"], "Site A")
+            self.assertTrue(updated["site_locked"])
+
+            rescanned = {**direct, "discovered_at": "2026-10-05T09:00:00+00:00"}
+            backend.remember_job_hosts(backend.ScanJob(id="second", config={}, results=[rescanned], status="complete"))
+            hosts = backend.list_remembered_hosts()
+            self.assertEqual(len(hosts), 1)
+            self.assertEqual(hosts[0]["site"], "Site A")
+            self.assertTrue(hosts[0]["site_locked"])
+            self.assertEqual(hosts[0]["seen_count"], 2)
+
+    def test_non_direct_server_site_cannot_be_changed(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(backend, "HOSTS_DB", Path(directory) / "hosts.db"):
+            host = {"site": "HQ", "vlan": "Servers", "cidr": "192.0.2.0/24", "ip": "192.0.2.10", "hostname": "app10", "hostname_source": "Reverse DNS", "services": ["SSH"], "open_ports": [22], "web": [], "os_family": "Linux", "os_version": "RHEL 9.6", "os_confidence": 95, "os_evidence": "SSH", "resources": {}, "resource_status": "Not collected", "discovered_at": "2026-10-05T08:00:00+00:00"}
+            backend.remember_job_hosts(backend.ScanJob(id="first", config={}, results=[host], status="complete"))
+            with self.assertRaisesRegex(ValueError, "Only direct server"):
+                backend.update_remembered_site("HQ", "192.0.2.10", "Branch")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const state = {
-  health: null, jobs: [], job: null, timer: null, remembered: [], selected: new Set(), selectionJobId: null,
+  health: null, jobs: [], job: null, timer: null, remembered: [], selected: new Set(), rememberedSelected: new Set(), selectionJobId: null, exportSource: "scan",
   hostTable: {sortKey: "endpoint", sortDir: "asc", filters: {}},
   rememberedTable: {sortKey: "last_seen", sortDir: "desc", filters: {}}
 };
@@ -176,7 +176,7 @@ function render(job) {
   $("#osDonut").style.setProperty("--win", `${win}%`); $("#osDonut").style.setProperty("--lin", `${lin}%`);
   const validKeys = new Set((job.results || []).map(hostKey));
   state.selected = new Set([...state.selected].filter(key => validKeys.has(key)));
-  renderRecent(job.results || []); renderTable();
+  renderRecent(job.results || []); renderBreakdowns(job.breakdown || {}); renderTable();
   if (["complete","failed","cancelled"].includes(job.status)) finishHero(job);
 }
 
@@ -184,6 +184,19 @@ function renderRecent(results) {
   const el = $("#recentHosts");
   if (!results.length) { el.className = "recent-hosts empty-state"; el.innerHTML = "<span>⌁</span><h4>No hosts discovered yet</h4><p>Start a scan to build your inventory.</p>"; return; }
   el.className = "recent-hosts"; el.innerHTML = results.slice(-5).reverse().map(host => `<div class="host-row"><span class="host-avatar">${host.os_family === "Windows" ? "W" : host.os_family === "Linux" ? "L" : "?"}</span><div><strong>${esc(host.hostname || host.ip)}</strong><small>${esc(host.ip)} · ${esc(host.role || "Network Endpoint")}</small></div><div class="service-chips">${host.services.map(serviceChip).join("")}</div><div><strong>${esc(host.site)}</strong><small>${esc(host.vlan)}</small></div></div>`).join("");
+}
+
+function renderBreakdowns(breakdown) {
+  const sites = breakdown.sites || [], operatingSystems = breakdown.operating_systems || [], vlans = breakdown.vlans || [];
+  $("#siteResources").classList.toggle("empty-breakdown", !sites.length);
+  $("#siteResources").innerHTML = sites.length ? sites.map(site => {
+    const capacity = site.resource_hosts ? `${Number(site.cpu_cores || 0).toLocaleString()} cores · ${Number(site.ram_gb || 0).toLocaleString()} GB RAM · ${Number(site.disk_gb || 0).toLocaleString()} GB disk` : "No authenticated resource data";
+    return `<div class="breakdown-row"><div><strong>${esc(site.site)}</strong><small>${esc(capacity)} · ${site.resource_hosts || 0}/${site.servers} servers measured</small></div><b>${site.servers}</b></div>`;
+  }).join("") : "No collected resources yet.";
+  $("#osCounts").classList.toggle("empty-breakdown", !operatingSystems.length);
+  $("#osCounts").innerHTML = operatingSystems.length ? operatingSystems.map(os => `<div class="breakdown-row"><div><strong>${esc(os.name)}</strong><small>Detected operating system</small></div><b>${os.servers}</b></div>`).join("") : "No operating systems yet.";
+  $("#vlanCounts").classList.toggle("empty-breakdown", !vlans.length);
+  $("#vlanCounts").innerHTML = vlans.length ? vlans.map(item => `<div class="breakdown-row"><div><strong>${esc(item.site)} · ${esc(item.vlan)}</strong><small>Site-specific VLAN</small></div><b>${item.servers}</b></div>`).join("") : "No VLAN inventory yet.";
 }
 const serviceChip = x => `<span class="chip ${x}">${esc(x)}</span>`;
 const esc = x => String(x ?? "").replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
@@ -194,30 +207,6 @@ function sshUsernameFor(host) {
   if (host.os_family === "Windows") return config.windows_ssh_username || config.linux_ssh_username || "";
   return config.linux_ssh_username || config.windows_ssh_username || "";
 }
-
-function puttyUri(host) {
-  const username = sshUsernameFor(host);
-  const authority = username ? `${encodeURIComponent(username)}@${host.ip}` : host.ip;
-  return `netatlas-putty://${authority}:22`;
-}
-
-function puttyCommand(host) {
-  const username = sshUsernameFor(host);
-  const destination = username ? `${username}@${host.ip}` : host.ip;
-  return `putty.exe -ssh "${destination}" -P 22`;
-}
-
-function rowSshLink(host) {
-  if (!(host.services || []).includes("SSH")) return "";
-  return `<a class="row-putty" href="${esc(puttyUri(host))}" data-putty-link data-putty-command="${esc(puttyCommand(host))}" title="Open in PuTTY; the command is copied as a fallback" aria-label="Open PuTTY to ${esc(host.hostname || host.ip)}">PuTTY</a>`;
-}
-
-document.addEventListener("click", event => {
-  const link = event.target.closest("[data-putty-link]");
-  if (!link) return;
-  navigator.clipboard?.writeText(link.dataset.puttyCommand).catch(() => {});
-  toast("Opening PuTTY. The PuTTY command was also copied.");
-});
 
 function resourceText(host) {
   const r = host.resources || {}, parts = [];
@@ -288,7 +277,7 @@ function updateSelectionControls(rows) {
 
 function renderTable() {
   const rows = filteredResults(); $("#resultCount").textContent = `${rows.length} host${rows.length === 1 ? "" : "s"}`;
-  $("#hostTable").innerHTML = rows.length ? rows.map(h => `<tr tabindex="0" data-host="${esc(h.ip)}" data-site="${esc(h.site)}"><td class="select-cell"><input type="checkbox" data-host-select="${esc(hostKey(h))}" aria-label="Select ${esc(h.hostname || h.ip)}" ${state.selected.has(hostKey(h)) ? "checked" : ""}></td><td><strong>${esc(h.hostname || "Unresolved")}</strong><small>${esc(h.ip)}</small></td><td><span class="role-pill">${esc(h.role || "Network Endpoint")}</span></td><td><strong>${esc(h.site)}</strong><small>${esc(h.vlan)} · ${esc(h.cidr)}</small></td><td><div class="service-chips">${(h.services || []).map(serviceChip).join("")}</div></td><td><strong>${esc(h.os_version || h.os_family)}</strong><small>${esc(h.os_evidence)}</small></td><td><small>${esc(resourceText(h))}</small></td><td><div class="confidence"><i style="--c:${h.os_confidence || 0}%"></i><span>${h.os_confidence || 0}%</span></div></td><td><div class="row-actions">${rowSshLink(h)}<span class="row-open">↗</span></div></td></tr>`).join("") : '<tr><td colspan="9" class="table-empty">No hosts match the current filters.</td></tr>';
+  $("#hostTable").innerHTML = rows.length ? rows.map(h => `<tr tabindex="0" data-host="${esc(h.ip)}" data-site="${esc(h.site)}"><td class="select-cell"><input type="checkbox" data-host-select="${esc(hostKey(h))}" aria-label="Select ${esc(h.hostname || h.ip)}" ${state.selected.has(hostKey(h)) ? "checked" : ""}></td><td><strong>${esc(h.hostname || "Unresolved")}</strong><small>${esc(h.ip)}</small></td><td><span class="role-pill">${esc(h.role || "Network Endpoint")}</span></td><td><strong>${esc(h.site)}</strong><small>${esc(h.vlan)} · ${esc(h.cidr)}</small></td><td><div class="service-chips">${(h.services || []).map(serviceChip).join("")}</div></td><td><strong>${esc(h.os_version || h.os_family)}</strong><small>${esc(h.os_evidence)}</small></td><td><small>${esc(resourceText(h))}</small></td><td><div class="confidence"><i style="--c:${h.os_confidence || 0}%"></i><span>${h.os_confidence || 0}%</span></div></td><td><div class="row-actions"><span class="row-open">↗</span></div></td></tr>`).join("") : '<tr><td colspan="9" class="table-empty">No hosts match the current filters.</td></tr>';
   $$('[data-host]').forEach(row => {
     row.addEventListener("click", event => { if (!event.target.closest('input,button,a')) openHost(row.dataset.host, row.dataset.site); });
     row.addEventListener("keydown", event => {
@@ -312,10 +301,6 @@ function openHost(ip, site) {
 
 function showHost(host, remembered = false) {
   const links = [];
-  if ((host.services || []).includes("SSH")) {
-    links.push(`<a class="detail-link putty-link" href="${esc(puttyUri(host))}" data-putty-link data-putty-command="${esc(puttyCommand(host))}">Open in PuTTY ↗</a>`);
-    links.push('<a class="detail-link" href="/register-putty-handler.ps1" download>Set up PuTTY links ↓</a>');
-  }
   if (host.services.includes("HTTP")) links.push(`<a class="detail-link" href="http://${esc(host.ip)}" target="_blank" rel="noreferrer">Open HTTP ↗</a>`);
   if (host.services.includes("HTTPS")) links.push(`<a class="detail-link" href="https://${esc(host.ip)}" target="_blank" rel="noreferrer">Open HTTPS ↗</a>`);
   const resources = Object.entries(host.resources || {}).map(([key, value]) => `<div class="detail-stat"><small>${esc(key.replaceAll("_", " "))}</small><strong>${esc(value)}</strong></div>`).join("");
@@ -351,14 +336,33 @@ function rememberedColumnValue(host, key, raw = false) {
   return hostColumnValue(host, key, raw);
 }
 
+function selectedRemembered() {
+  return state.remembered.filter(host => state.rememberedSelected.has(hostKey(host)));
+}
+
+function updateRememberedSelectionControls(rows) {
+  const visibleKeys = rows.map(hostKey), selectedCount = selectedRemembered().length;
+  const selectedVisible = visibleKeys.filter(key => state.rememberedSelected.has(key)).length;
+  const selectAll = $("#rememberedSelectVisible");
+  selectAll.checked = visibleKeys.length > 0 && selectedVisible === visibleKeys.length;
+  selectAll.indeterminate = selectedVisible > 0 && selectedVisible < visibleKeys.length;
+  selectAll.disabled = !visibleKeys.length;
+  $("#rememberedSelectionCount").textContent = `${selectedCount} selected`;
+  $("#rememberedClearSelectionButton").disabled = selectedCount === 0;
+  $("#rememberedExportButton").disabled = selectedCount === 0;
+  $("#rememberedExportButton").textContent = selectedCount ? `Export selected (${selectedCount})` : "Export selected";
+}
+
 function renderRemembered() {
   const rows = filteredRemembered();
   $("#navRememberedCount").textContent = state.remembered.length;
   $("#rememberedCount").textContent = `${rows.length} remembered host${rows.length === 1 ? "" : "s"}`;
   $("#rememberedTable").innerHTML = rows.length ? rows.map(host => {
     const index = state.remembered.indexOf(host), seen = new Date(host.last_seen);
-    return `<tr tabindex="0" data-remembered-index="${index}"><td><strong>${esc(host.hostname)}</strong><small>${esc(host.ip)}</small></td><td><div class="role-editor"><input data-role-input value="${esc(host.role)}" maxlength="80" aria-label="Role for ${esc(host.hostname)}"><button data-role-save type="button">Save</button></div>${host.role_locked ? '<small class="manual-role">Manual role</small>' : '<small>Auto-detected role</small>'}</td><td><strong>${esc(host.site)}</strong><small>${esc(host.vlan)} · ${esc(host.cidr)}</small></td><td><div class="service-chips">${(host.services || []).map(serviceChip).join("")}</div></td><td><strong>${esc(host.os_version || host.os_family)}</strong><small>${esc(host.os_evidence)}</small></td><td><small>${esc(resourceText(host))}</small></td><td><strong>${esc(seen.toLocaleDateString())}</strong><small>${esc(seen.toLocaleTimeString())}</small></td><td><span class="seen-count">${host.seen_count}</span></td><td><div class="row-actions">${rowSshLink(host)}<button class="danger-icon" data-delete-remembered type="button" title="Remove from inventory" aria-label="Remove ${esc(host.hostname)} from inventory">×</button><span class="row-open">↗</span></div></td></tr>`;
-  }).join("") : '<tr><td colspan="9" class="table-empty">No resolved hosts match the current filters.</td></tr>';
+    const direct = String(host.cidr || "").endsWith("/32");
+    const siteCell = direct ? `<div class="site-editor"><input data-site-input value="${esc(host.site)}" maxlength="60" aria-label="Site for ${esc(host.hostname)}"><button data-site-save type="button">Save</button></div><small>${host.site_locked ? "Manual site" : "Direct server site"} · ${esc(host.vlan)} · ${esc(host.cidr)}</small>` : `<strong>${esc(host.site)}</strong><small>${esc(host.vlan)} · ${esc(host.cidr)}</small>`;
+    return `<tr tabindex="0" data-remembered-index="${index}"><td class="select-cell"><input type="checkbox" data-remembered-select="${esc(hostKey(host))}" aria-label="Select ${esc(host.hostname || host.ip)}" ${state.rememberedSelected.has(hostKey(host)) ? "checked" : ""}></td><td><strong>${esc(host.hostname)}</strong><small>${esc(host.ip)}</small></td><td><div class="role-editor"><input data-role-input value="${esc(host.role)}" maxlength="80" aria-label="Role for ${esc(host.hostname)}"><button data-role-save type="button">Save</button></div>${host.role_locked ? '<small class="manual-role">Manual role</small>' : '<small>Defaults to hostname</small>'}</td><td>${siteCell}</td><td><div class="service-chips">${(host.services || []).map(serviceChip).join("")}</div></td><td><strong>${esc(host.os_version || host.os_family)}</strong><small>${esc(host.os_evidence)}</small></td><td><small>${esc(resourceText(host))}</small></td><td><strong>${esc(seen.toLocaleDateString())}</strong><small>${esc(seen.toLocaleTimeString())}</small></td><td><span class="seen-count">${host.seen_count}</span></td><td><div class="row-actions"><button class="danger-icon" data-delete-remembered type="button" title="Remove from inventory" aria-label="Remove ${esc(host.hostname)} from inventory">×</button><span class="row-open">↗</span></div></td></tr>`;
+  }).join("") : '<tr><td colspan="10" class="table-empty">No resolved hosts match the current filters.</td></tr>';
   $$('[data-remembered-index]').forEach(row => {
     row.addEventListener("click", event => { if (!event.target.closest("input,button,a")) showHost(state.remembered[Number(row.dataset.rememberedIndex)], true); });
     row.addEventListener("keydown", event => { if ((event.key === "Enter" || event.key === " ") && !event.target.closest("input,button,a")) { event.preventDefault(); showHost(state.remembered[Number(row.dataset.rememberedIndex)], true); } });
@@ -375,12 +379,33 @@ function renderRemembered() {
     } catch (error) { button.disabled = false; toast(error.message); }
   }));
   $$('[data-role-input]').forEach(input => input.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); input.closest("tr").querySelector("[data-role-save]").click(); } }));
+  $$('[data-site-save]').forEach(button => button.addEventListener("click", async event => {
+    event.stopPropagation();
+    const row = button.closest("tr"), host = state.remembered[Number(row.dataset.rememberedIndex)];
+    const newSite = row.querySelector("[data-site-input]").value.trim(), oldKey = hostKey(host);
+    if (!newSite) { toast("Site name cannot be empty."); return; }
+    button.disabled = true;
+    try {
+      const updated = await api("/api/remembered-hosts/site", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({site:host.site, ip:host.ip, new_site:newSite})});
+      const wasSelected = state.rememberedSelected.delete(oldKey);
+      Object.assign(host, updated);
+      if (wasSelected) state.rememberedSelected.add(hostKey(host));
+      renderRemembered(); toast(`Moved ${host.hostname} to ${host.site}.`);
+    } catch (error) { button.disabled = false; toast(error.message); }
+  }));
+  $$('[data-site-input]').forEach(input => input.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); input.closest("tr").querySelector("[data-site-save]").click(); } }));
+  $$('[data-remembered-select]').forEach(input => input.addEventListener("change", event => {
+    event.stopPropagation();
+    if (input.checked) state.rememberedSelected.add(input.dataset.rememberedSelect); else state.rememberedSelected.delete(input.dataset.rememberedSelect);
+    updateRememberedSelectionControls(rows);
+  }));
   $$('[data-delete-remembered]').forEach(button => button.addEventListener("click", event => {
     event.stopPropagation();
     const row = button.closest("tr"), host = state.remembered[Number(row.dataset.rememberedIndex)];
     confirmDeleteRemembered(host);
   }));
   updateSortButtons("[data-remembered-sort]", state.rememberedTable);
+  updateRememberedSelectionControls(rows);
 }
 
 async function confirmDeleteRemembered(host) {
@@ -389,6 +414,7 @@ async function confirmDeleteRemembered(host) {
   if (!window.confirm(`Remove ${label} (${host.ip}) from Remembered Hosts?\n\nThis cannot be undone. A later scan may add it again.`)) return;
   try {
     await api("/api/remembered-hosts/delete", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({site:host.site, ip:host.ip})});
+    state.rememberedSelected.delete(hostKey(host));
     state.remembered = state.remembered.filter(item => !(item.site === host.site && item.ip === host.ip));
     if ($("#hostDialog").open) $("#hostDialog").close();
     renderRemembered();
@@ -399,6 +425,8 @@ async function confirmDeleteRemembered(host) {
 async function loadRemembered() {
   try {
     state.remembered = await api("/api/remembered-hosts");
+    const validKeys = new Set(state.remembered.map(hostKey));
+    state.rememberedSelected = new Set([...state.rememberedSelected].filter(key => validKeys.has(key)));
     renderRemembered();
   } catch (error) { toast(`Remembered hosts unavailable: ${error.message}`); }
 }
@@ -410,33 +438,43 @@ $$('[data-remembered-sort]').forEach(button => button.addEventListener("click", 
   else { state.rememberedTable.sortKey = key; state.rememberedTable.sortDir = "asc"; }
   renderRemembered();
 }));
+$("#rememberedSelectVisible").addEventListener("change", event => {
+  filteredRemembered().forEach(host => event.target.checked ? state.rememberedSelected.add(hostKey(host)) : state.rememberedSelected.delete(hostKey(host)));
+  renderRemembered();
+});
+$("#rememberedSelectVisibleButton").addEventListener("click", () => { filteredRemembered().forEach(host => state.rememberedSelected.add(hostKey(host))); renderRemembered(); });
+$("#rememberedClearSelectionButton").addEventListener("click", () => { state.rememberedSelected.clear(); renderRemembered(); });
 
 $("#cancelButton").addEventListener("click", async () => { if (state.job) { await api(`/api/scans/${state.job.id}/cancel`, {method:"POST"}); toast("Stopping after current checks finish…"); } });
-$("#exportButton").addEventListener("click", () => {
-  const count = selectedResults().length;
+function openExportDialog(source) {
+  const count = source === "remembered" ? selectedRemembered().length : selectedResults().length;
   if (!count) { toast("Select at least one host first."); return; }
+  state.exportSource = source;
   if (!$("#exportLinuxSshUser").value) $("#exportLinuxSshUser").value = state.job?.config?.linux_ssh_username || "";
   if (!$("#exportWindowsSshUser").value) $("#exportWindowsSshUser").value = state.job?.config?.windows_ssh_username || "";
-  $("#exportSelectionSummary").textContent = `Creates sessions for ${count} selected host${count === 1 ? "" : "s"} only. Windows receives SSH and RDP; Linux receives SSH.`;
+  $("#exportSelectionSummary").textContent = `Creates sessions for ${count} selected ${source === "remembered" ? "remembered " : ""}host${count === 1 ? "" : "s"}. Windows receives SSH and RDP; Linux receives SSH.`;
   $("#exportDialog").showModal();
-});
-async function downloadSelected(format) {
-  const hosts = selectedResults();
-  if (!state.job || !hosts.length) { toast("Select at least one host first."); return; }
+}
+$("#exportButton").addEventListener("click", () => openExportDialog("scan"));
+$("#rememberedExportButton").addEventListener("click", () => openExportDialog("remembered"));
+async function downloadSelected(format, source = state.exportSource) {
+  const hosts = source === "remembered" ? selectedRemembered() : selectedResults();
+  if (!hosts.length || (source === "scan" && !state.job)) { toast("Select at least one host first."); return; }
   try {
-    const response = await fetch(`/api/scans/${state.job.id}/export`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({
+    const endpoint = source === "remembered" ? "/api/remembered-hosts/export" : `/api/scans/${state.job.id}/export`;
+    const response = await fetch(endpoint, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({
       format, hosts: hosts.map(host => ({site:host.site, ip:host.ip})),
       linux_ssh_user:$("#exportLinuxSshUser").value, windows_ssh_user:$("#exportWindowsSshUser").value, rdp_user:$("#exportRdpUser").value
     })});
     if (!response.ok) { const error = await response.json(); throw new Error(error.error || `Export failed (${response.status})`); }
     const blob = await response.blob(), url = URL.createObjectURL(blob), link = document.createElement("a");
     const disposition = response.headers.get("Content-Disposition") || "";
-    link.href = url; link.download = disposition.match(/filename="?([^";]+)"?/i)?.[1] || `NetAtlas-selected.${format === "inventory" ? "csv" : format}`;
+    link.href = url; link.download = disposition.match(/filename="?([^";]+)"?/i)?.[1] || `NetAtlas-${source}-selected.${format === "inventory" ? "csv" : format}`;
     document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     toast(`Exported ${hosts.length} selected host${hosts.length === 1 ? "" : "s"}.`);
   } catch (error) { toast(error.message); }
 }
-$("#inventoryButton").addEventListener("click", () => downloadSelected("inventory"));
+$("#inventoryButton").addEventListener("click", () => downloadSelected("inventory", "scan"));
 $("#downloadMoba").addEventListener("click", () => downloadSelected("mxtsessions"));
 $("#downloadCsv").addEventListener("click", () => downloadSelected("csv"));
 

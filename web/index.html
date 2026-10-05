@@ -84,6 +84,11 @@
             </div>
           </section>
         </div>
+        <div class="breakdown-grid">
+          <section class="panel breakdown-panel"><div class="panel-head"><div><p class="eyebrow">SITE CAPACITY</p><h3>Total resources by site</h3></div></div><div id="siteResources" class="breakdown-list empty-breakdown">No collected resources yet.</div></section>
+          <section class="panel breakdown-panel"><div class="panel-head"><div><p class="eyebrow">OPERATING SYSTEMS</p><h3>Servers by exact OS</h3></div></div><div id="osCounts" class="breakdown-list empty-breakdown">No operating systems yet.</div></section>
+          <section class="panel breakdown-panel"><div class="panel-head"><div><p class="eyebrow">NETWORK DISTRIBUTION</p><h3>Servers by site and VLAN</h3></div></div><div id="vlanCounts" class="breakdown-list empty-breakdown">No VLAN inventory yet.</div></section>
+        </div>
       </section>
 
       <section class="view" id="resultsView">
@@ -114,20 +119,23 @@
       <section class="view" id="rememberedView">
         <div class="section-heading">
           <div><p class="eyebrow">DURABLE INVENTORY</p><h2>Remembered Hosts</h2><p>Resolved hosts are added automatically. Later scans refresh existing records and preserve manually assigned roles.</p></div>
-          <span class="memory-status"><i></i> Stored in the local NetAtlas database</span>
+          <div class="section-actions"><span class="memory-status"><i></i> Stored in the local NetAtlas database</span><button class="button primary" id="rememberedExportButton" disabled>Export selected</button></div>
         </div>
         <div class="table-panel remembered-panel">
           <div class="table-tools">
             <label class="search"><span>⌕</span><input id="rememberedSearch" type="search" placeholder="Search all columns…"></label>
+            <button class="button ghost compact" id="rememberedSelectVisibleButton" type="button">Select visible</button>
+            <button class="button ghost compact" id="rememberedClearSelectionButton" type="button" disabled>Clear selection</button>
+            <strong class="selection-count" id="rememberedSelectionCount">0 selected</strong>
             <span id="rememberedCount">0 remembered hosts</span>
           </div>
           <div class="table-scroll">
             <table class="remembered-table">
               <thead>
-                <tr class="sort-row"><th><button data-remembered-sort="endpoint">Endpoint</button></th><th><button data-remembered-sort="role">Role name</button></th><th><button data-remembered-sort="location">Site / VLAN</button></th><th><button data-remembered-sort="services">Services</button></th><th><button data-remembered-sort="os">Operating system</button></th><th><button data-remembered-sort="resources">Resources</button></th><th><button data-remembered-sort="last_seen">Last seen</button></th><th><button data-remembered-sort="seen_count">Seen</button></th><th>Actions</th></tr>
-                <tr class="filter-row"><th><input data-remembered-filter="endpoint" placeholder="Filter endpoint" aria-label="Filter remembered endpoint column"></th><th><input data-remembered-filter="role" placeholder="Filter role" aria-label="Filter remembered role column"></th><th><input data-remembered-filter="location" placeholder="Filter site or VLAN" aria-label="Filter remembered site or VLAN column"></th><th><input data-remembered-filter="services" placeholder="Filter services" aria-label="Filter remembered services column"></th><th><input data-remembered-filter="os" placeholder="Filter OS" aria-label="Filter remembered operating system column"></th><th><input data-remembered-filter="resources" placeholder="Filter resources" aria-label="Filter remembered resources column"></th><th><input data-remembered-filter="last_seen" placeholder="Filter last seen" aria-label="Filter last seen column"></th><th><input data-remembered-filter="seen_count" placeholder="Filter count" aria-label="Filter seen count column"></th><th></th></tr>
+                <tr class="sort-row"><th class="select-cell"><input id="rememberedSelectVisible" type="checkbox" aria-label="Select all visible remembered hosts"></th><th><button data-remembered-sort="endpoint">Endpoint</button></th><th><button data-remembered-sort="role">Role name</button></th><th><button data-remembered-sort="location">Site / VLAN</button></th><th><button data-remembered-sort="services">Services</button></th><th><button data-remembered-sort="os">Operating system</button></th><th><button data-remembered-sort="resources">Resources</button></th><th><button data-remembered-sort="last_seen">Last seen</button></th><th><button data-remembered-sort="seen_count">Seen</button></th><th>Actions</th></tr>
+                <tr class="filter-row"><th></th><th><input data-remembered-filter="endpoint" placeholder="Filter endpoint" aria-label="Filter remembered endpoint column"></th><th><input data-remembered-filter="role" placeholder="Filter role" aria-label="Filter remembered role column"></th><th><input data-remembered-filter="location" placeholder="Filter site or VLAN" aria-label="Filter remembered site or VLAN column"></th><th><input data-remembered-filter="services" placeholder="Filter services" aria-label="Filter remembered services column"></th><th><input data-remembered-filter="os" placeholder="Filter OS" aria-label="Filter operating system column"></th><th><input data-remembered-filter="resources" placeholder="Filter resources" aria-label="Filter remembered resources column"></th><th><input data-remembered-filter="last_seen" placeholder="Filter last seen" aria-label="Filter last seen column"></th><th><input data-remembered-filter="seen_count" placeholder="Filter count" aria-label="Filter count column"></th><th></th></tr>
               </thead>
-              <tbody id="rememberedTable"><tr><td colspan="9" class="table-empty">Resolved hosts will appear here after a scan.</td></tr></tbody>
+              <tbody id="rememberedTable"><tr><td colspan="10" class="table-empty">Resolved hosts will appear here after a scan.</td></tr></tbody>
             </table>
           </div>
         </div>

@@ -12,7 +12,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-offline.ps1
 
 For an ARM64 Docker host, add `-Platform linux/arm64`.
 
-The script creates `dist/netatlas-1.2.6-linux-amd64.tar`, its SHA-256 checksum, and the offline loader scripts. Copy the entire `dist` folder to approved removable media.
+The script creates `dist/netatlas-1.2.7-linux-amd64.tar`, its SHA-256 checksum, and the offline loader scripts. Copy the entire `dist` folder to approved removable media.
 
 ## 2. Load and run inside the air gap
 
@@ -20,7 +20,7 @@ Windows Docker host:
 
 ```powershell
 New-Item -ItemType Directory -Force .\netatlas-data
-.\load-and-run-airgap.ps1 -Archive .\netatlas-1.2.6-linux-amd64.tar -DataPath .\netatlas-data
+.\load-and-run-airgap.ps1 -Archive .\netatlas-1.2.7-linux-amd64.tar -DataPath .\netatlas-data
 ```
 
 Linux Docker host—first create the persistent local database folder:
@@ -40,7 +40,7 @@ sudo chcon -Rt container_file_t ./netatlas-data
 Then load and run NetAtlas:
 
 ```sh
-sh ./load-and-run-airgap.sh ./netatlas-1.2.6-linux-amd64.tar 8765 ./netatlas-data 0.0.0.0
+sh ./load-and-run-airgap.sh ./netatlas-1.2.7-linux-amd64.tar 8765 ./netatlas-data 0.0.0.0
 ```
 
 The Linux loader accepts checksum files copied from either Windows or Linux and verifies the hash independently of line-ending format. It also normalizes the local folder ownership to the container user (UID/GID 10001) and applies Docker's private SELinux label during the mount.
@@ -49,7 +49,7 @@ Open `http://<NETATLAS-NODE-IP>:8765`. The loader publishes on all node interfac
 
 ## SSH credentials
 
-The scan setup provides independent Linux SSH and Windows OpenSSH profiles. Configure either or both username/password pairs. NetAtlas tries the OS-matched profile first and, for initially unknown hosts, safely falls back to the other configured profile. It supports both standard password and password-backed keyboard-interactive login. Transient SSH connection or negotiation failures receive one fresh retry; rejected credentials do not. Enrichment uses at most four concurrent SSH connections. Passwords are held only in server memory while authenticated enrichment runs, then discarded. They are excluded from saved scan history, API responses, CSV, PuTTY links, and MobaXterm exports.
+The scan setup provides independent Linux SSH and Windows OpenSSH profiles. Configure either or both username/password pairs. NetAtlas tries the OS-matched profile first and, for initially unknown hosts, safely falls back to the other configured profile. It supports both standard password and password-backed keyboard-interactive login. Transient SSH connection or negotiation failures receive one fresh retry; rejected credentials do not. Enrichment uses at most four concurrent SSH connections. Passwords are held only in server memory while authenticated enrichment runs, then discarded. They are excluded from saved scan history, API responses, CSV, and MobaXterm exports.
 
 If manual SSH works but enrichment does not, open the host details or selected inventory CSV and check the SSH diagnostic fields. Common cases are a true MFA/OTP prompt, a restricted shell or disabled command execution, an account policy such as `AllowUsers`, a timeout, or algorithms that the bundled SSH client and server cannot negotiate. A successful login with unavailable PowerShell, CIM, `/etc/os-release`, `df`, or `sudo` commands is reported separately from bad credentials.
 
@@ -78,6 +78,6 @@ Deep Nmap OS detection is off by default. Enable it only when the extra fingerpr
 
 HTTP and HTTPS remain visible in inventory but are not exported as MobaXterm sessions. Filter or sort any column, select the required hosts, and export only that selection. Windows hosts are exported beneath a `Windows` tree with both SSH and RDP sessions. Linux hosts are exported beneath a `Linux` tree with SSH only.
 
-Verified SSH rows expose a PuTTY action. From host details, download **Set up PuTTY links**, then run the downloaded `register-putty-handler.ps1` once on the Windows workstation running the browser. It registers a current-user `netatlas-putty://` handler and locates PuTTY automatically; use `-PuttyPath C:\Path\To\putty.exe` if needed. Each click also copies a ready `putty.exe -ssh "username@ip" -P 22` command as a fallback. No password is included.
-
 For a small ad-hoc scan, enter the individual IPs under **Direct server targets** and enable **Direct servers only**. The populated Site A and Site B VLAN lists are ignored for that run.
+
+Remembered Hosts can export selected rows to MobaXterm or compatibility CSV without rerunning a scan. Direct `/32` targets also expose an editable site field; the SQLite migration adds a lock flag automatically so that assignment survives future scans.

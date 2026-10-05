@@ -10,7 +10,7 @@ NetAtlas is a local multi-site IPv4 inventory scanner with a browser GUI. It che
 
 The basic scanner uses the Python standard library. For password-authenticated SSH enrichment when running directly on Windows, install `requirements.txt`; the Docker image already includes it. Scan history and the SQLite remembered-host inventory are stored locally under `data/`.
 
-The Hosts and Remembered Hosts tables support per-column filters and click-to-sort headers. Select the required rows in **Hosts** before downloading inventory CSV, compatibility CSV, or MobaXterm sessions; exports contain only the selected hosts. Remembered hosts can be removed with an explicit confirmation prompt.
+The Hosts and Remembered Hosts tables support per-column filters, click-to-sort headers, and selected-only exports. Both views can generate compatibility CSV and MobaXterm session lists; the live Hosts view also exports the full inventory CSV. Remembered hosts can be removed with an explicit confirmation prompt.
 
 ## Docker and air-gap deployment
 
@@ -42,16 +42,14 @@ Docker deployments listen on all node interfaces by default. Restrict TCP/8765 t
 - NetAtlas tries both standard password authentication and password-backed keyboard-interactive authentication. A transient connection or negotiation failure receives one fresh retry; rejected credentials are not repeatedly retried. SSH enrichment is capped at four concurrent hosts to avoid bursts against the network and servers. Host details and inventory CSV distinguish rejected credentials, negotiation errors, timeouts, and a successful login whose inventory commands were restricted.
 - Windows resource collection uses PowerShell remoting (WinRM) with the Windows identity running NetAtlas. The target must allow WinRM and authorize that identity.
 - Services are independent: a Windows server listening on both SSH and RDP is listed with both protocols and receives both MobaXterm sessions.
-- NetAtlas infers a role name from the hostname, operating system, and verified services. Role names can be edited in **Remembered Hosts** and manual values survive later scans.
+- The default role is the resolved hostname. Role names can be edited in **Remembered Hosts** and manual values survive later scans.
 - Only resolved hostnames are added to **Remembered Hosts**. Repeat scans update the existing site/IP record and add newly resolved hosts.
-- The **Direct server targets** field accepts individual IPv4 addresses with an optional label. Enable **Direct servers only** to run those IPs without either VLAN list, or leave it off to combine direct targets with the VLAN scan.
+- The **Direct server targets** field accepts individual IPv4 addresses with an optional label. Enable **Direct servers only** to run those IPs without either VLAN list, or leave it off to combine direct targets with the VLAN scan. A direct server's site can be changed in **Remembered Hosts**, and that manual site survives later scans.
 - The internal DNS suffix `.tng.topsecret` is removed from displayed, remembered, CSV, and MobaXterm hostnames.
 - Scanning uses only the networks you enter. Only scan networks you own or are authorized to assess.
 
 ## MobaXterm export
 
-After a completed scan, filter or sort the inventory, select the required hosts, and choose **Export selected**. Windows hosts are grouped beneath `Windows` and receive SSH and RDP entries. Linux hosts are grouped beneath `Linux` and receive SSH only. Site and VLAN folders are retained under each OS block. HTTP and HTTPS remain inventory-only and are never exported as sessions. Passwords are never exported. A selected-host inventory CSV and generic compatibility CSV are also available.
+After a completed scan—or from durable **Remembered Hosts**—filter or sort the inventory, select the required hosts, and choose **Export selected**. Windows hosts are grouped beneath `Windows` and receive SSH and RDP entries. Linux hosts are grouped beneath `Linux` and receive SSH only. Site and VLAN folders are retained under each OS block. HTTP and HTTPS remain inventory-only and are never exported as sessions. Passwords are never exported. In MobaXterm, right-click **User sessions** and choose **Import sessions from file**.
 
-Every host with a verified SSH service has a **PuTTY** action in Hosts, Remembered Hosts, and host details. In host details, download **Set up PuTTY links** and run `register-putty-handler.ps1` once on the Windows browser workstation. NetAtlas then opens `putty.exe -ssh "username@ip" -P 22`; it also copies that command on every click as a fallback. The username is included when known. Passwords are intentionally excluded because credentials in URLs or process arguments can leak.
-
-The bulk MobaXterm export is unchanged. In MobaXterm, right-click **User sessions** and choose **Import sessions from file**.
+Overview includes resource totals per site, counts for each exact operating-system label, and counts for every site/VLAN pair. VLANs with the same number or name at different sites remain separate.

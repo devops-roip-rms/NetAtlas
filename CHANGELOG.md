@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.7
+
+- Removed all per-host PuTTY links and the Windows protocol-handler helper.
+- Added selected-host MobaXterm and compatibility CSV exports to Remembered Hosts.
+- Changed the automatic role default to the resolved hostname while preserving manually edited roles.
+- Added editable, persistent site assignment for remembered direct server targets.
+- Added Overview rollups for total CPU, RAM, and disk by site; exact OS counts; and server counts for each site/VLAN pair.
+
 ## 1.2.6
 
 - Replaced MobaXterm browser shortcuts with PuTTY actions and a downloadable per-user Windows protocol-handler setup; the PuTTY command is copied as a fallback and never contains a password.
