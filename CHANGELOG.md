@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.8
+
+- Rebuilt Overview entirely from Remembered Hosts, including last-checked reachability, service counts, OS totals, site resources and site/VLAN counts.
+- Added dated latest additions to remembered inventory; failed, cancelled or out-of-scope scans do not mark saved hosts offline.
+- Added Systems with multi-host drag-and-drop, host ordering, system ordering, rename/delete and selected MobaXterm/CSV exports grouped by system and OS.
+- Added persistent interval-based background scans with separate site/VLAN and SSH profiles. Scheduled credentials are encrypted locally and restored after restart.
+- Added a New hosts review queue with a live tab count, deduplication, approval and persistent dismissal. Background scans refresh known records without automatically remembering new hosts.
+- Preserved previously authenticated OS/resource facts when a later observation cannot collect them.
+- Enforced LF shell-script line endings in Git and Windows-created air-gap bundles.
+
 ## 1.2.7
 
 - Removed all per-host PuTTY links and the Windows protocol-handler helper.

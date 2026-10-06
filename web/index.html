@@ -15,6 +15,9 @@
         <button class="nav-item active" data-view="overview"><span>⌁</span> Overview</button>
         <button class="nav-item" data-view="results"><span>▦</span> Hosts <b id="navHostCount">0</b></button>
         <button class="nav-item" data-view="remembered"><span>★</span> Remembered <b id="navRememberedCount">0</b></button>
+        <button class="nav-item" data-view="systems"><span>▤</span> Systems</button>
+        <button class="nav-item" data-view="discoveries"><span>＋</span> New hosts <b id="navDiscoveryCount">0</b></button>
+        <button class="nav-item" data-view="background"><span>◷</span> Background scans</button>
         <button class="nav-item" data-view="configuration"><span>⌘</span> Scan setup</button>
       </nav>
       <div class="side-bottom">
@@ -29,7 +32,7 @@
       <header class="topbar">
         <div>
           <p class="eyebrow">NETWORK OPERATIONS</p>
-          <h1 id="pageTitle">Good morning, operator.</h1>
+          <h1 id="pageTitle">Your remembered estate.</h1>
         </div>
         <div class="top-actions">
           <span class="runtime-badge" id="runtimeBadge"><i></i><span>Detecting runtime</span></span>
@@ -40,6 +43,7 @@
       </header>
 
       <section class="view active" id="overviewView">
+        <div class="section-heading"><div><p class="eyebrow">REMEMBERED INVENTORY</p><h2>Your saved estate</h2><p id="overviewChecked">Reachability reflects each host's last completed check. Unchecked hosts are shown separately.</p></div><button class="button ghost" data-go="remembered">Open Remembered Hosts →</button></div>
         <div class="scan-hero">
           <div class="radar" aria-hidden="true"><div class="radar-sweep"></div><i></i><i></i><i></i></div>
           <div class="hero-copy">
@@ -61,7 +65,9 @@
         </div>
 
         <div class="metrics" aria-label="Inventory summary">
-          <article><span class="metric-icon green">⌁</span><div><p>Reachable hosts</p><strong id="metricHosts">0</strong><small id="metricHostsDetail">No scan yet</small></div></article>
+          <article><span class="metric-icon green">★</span><div><p>Remembered hosts</p><strong id="metricRemembered">0</strong><small>Entire saved inventory</small></div></article>
+          <article><span class="metric-icon green">⌁</span><div><p>Reachable hosts</p><strong id="metricHosts">0</strong><small id="metricHostsDetail">At last completed check</small></div></article>
+          <article><span class="metric-icon amber">◌</span><div><p>Unreachable hosts</p><strong id="metricOffline">0</strong><small id="metricUnchecked">0 unchecked</small></div></article>
           <article><span class="metric-icon blue">›_</span><div><p>SSH ready</p><strong id="metricSsh">0</strong><small>Port 22 verified</small></div></article>
           <article><span class="metric-icon violet">▣</span><div><p>RDP ready</p><strong id="metricRdp">0</strong><small>Port 3389 verified</small></div></article>
           <article><span class="metric-icon amber">◎</span><div><p>Web consoles</p><strong id="metricWeb">0</strong><small>HTTP + HTTPS</small></div></article>
@@ -69,7 +75,7 @@
 
         <div class="overview-grid">
           <section class="panel hosts-panel">
-            <div class="panel-head"><div><p class="eyebrow">LIVE INVENTORY</p><h3>Recently discovered</h3></div><button class="text-button" data-go="results">View all →</button></div>
+            <div class="panel-head"><div><p class="eyebrow">REMEMBERED INVENTORY</p><h3>Latest added hosts</h3></div><button class="text-button" data-go="remembered">View all →</button></div>
             <div id="recentHosts" class="recent-hosts empty-state"><span>⌁</span><h4>No hosts discovered yet</h4><p>Start a scan to build your inventory.</p></div>
           </section>
           <section class="panel posture-panel">
@@ -118,7 +124,7 @@
 
       <section class="view" id="rememberedView">
         <div class="section-heading">
-          <div><p class="eyebrow">DURABLE INVENTORY</p><h2>Remembered Hosts</h2><p>Resolved hosts are added automatically. Later scans refresh existing records and preserve manually assigned roles.</p></div>
+          <div><p class="eyebrow">DURABLE INVENTORY</p><h2>Remembered Hosts</h2><p>Manual scans add resolved hosts automatically. Background discoveries require approval. Roles, systems and ordering survive rescans.</p></div>
           <div class="section-actions"><span class="memory-status"><i></i> Stored in the local NetAtlas database</span><button class="button primary" id="rememberedExportButton" disabled>Export selected</button></div>
         </div>
         <div class="table-panel remembered-panel">
@@ -139,6 +145,44 @@
             </table>
           </div>
         </div>
+      </section>
+
+      <section class="view" id="systemsView">
+        <div class="section-heading"><div><p class="eyebrow">SESSION LIBRARY</p><h2>Systems</h2><p>Select several servers and drag them together into a system. Drop above a server to set its order. Exports follow system order, with Windows and Linux folders inside each system.</p></div><button class="button primary" id="systemsExportButton" disabled>Export selected</button></div>
+        <div class="panel system-toolbar">
+          <form id="newSystemForm"><label class="sr-only" for="newSystemName">New system name</label><input id="newSystemName" placeholder="New system, e.g. RMS-Site-A" maxlength="80" required><button class="button primary" type="submit">Create system</button></form>
+          <label class="search"><span>⌕</span><input id="systemSearch" type="search" placeholder="Find hosts or systems…"></label>
+          <button class="button ghost" id="systemSelectAll">Select visible</button><button class="button ghost" id="systemClear">Clear</button><strong id="systemSelectionCount">0 selected</strong>
+          <select id="systemMoveTarget" aria-label="Destination system"></select><button class="button ghost" id="systemMoveButton">Move selected</button>
+        </div>
+        <div id="systemsBoard" class="systems-board"></div>
+      </section>
+
+      <section class="view" id="discoveriesView">
+        <div class="section-heading"><div><p class="eyebrow">BACKGROUND DISCOVERY</p><h2>New hosts awaiting review</h2><p>Only resolved hosts outside Remembered Hosts appear here. Repeated sightings update one record. Dismissed hosts stay hidden on future background scans.</p></div><div class="section-actions"><button class="button ghost" id="discoveryRefresh">Refresh</button><button class="button primary" id="approveDiscoveries" disabled>Add selected to Remembered</button></div></div>
+        <div class="table-panel"><div class="table-tools"><label class="search"><span>⌕</span><input id="discoverySearch" type="search" placeholder="Search new hosts…"></label><button class="button ghost" id="discoverySelectAll">Select visible</button><button class="button ghost" id="discoveryClear">Clear</button><strong id="discoverySelectionCount">0 selected</strong><button class="button ghost" id="dismissDiscoveries" disabled>Dismiss selected</button></div>
+          <div class="table-scroll"><table><thead><tr><th></th><th>Endpoint</th><th>Site / VLAN</th><th>Services</th><th>OS</th><th>Resources</th><th>First discovered</th><th>Last seen</th></tr></thead><tbody id="discoveryTable"></tbody></table></div>
+        </div>
+      </section>
+
+      <section class="view" id="backgroundView">
+        <div class="section-heading"><div><p class="eyebrow">AUTOMATIC DISCOVERY</p><h2>Background scans</h2><p>Runs while NetAtlas is running, even with the browser closed. The next interval starts after completion; scans never overlap.</p></div><button class="button ghost" id="stopSchedule">Stop schedule</button></div>
+        <div class="panel schedule-status" id="scheduleStatus">Loading schedule…</div>
+        <form id="scheduleForm" class="config-grid schedule-grid">
+          <section class="panel config-card"><h3>Site A</h3><label>Site name<input id="bgSiteAName" value="Site A"></label><label>VLAN subnets<textarea id="bgSiteAVlans" rows="8" spellcheck="false" placeholder="VLAN 95, 10.10.95.0/24"></textarea></label></section>
+          <section class="panel config-card"><h3>Site B</h3><label>Site name<input id="bgSiteBName" value="Site B"></label><label>VLAN subnets<textarea id="bgSiteBVlans" rows="8" spellcheck="false" placeholder="VLAN 95, 10.20.95.0/24"></textarea></label></section>
+          <section class="panel options-card"><h3>Interval and credentials</h3>
+            <label>Interval in minutes<input id="bgInterval" type="number" min="1" max="10080" value="60" required></label>
+            <label>Per-port timeout<select id="bgTimeout"><option value="0.5">Balanced · 0.5 sec</option><option value="1">Careful · 1 sec</option><option value="2">WAN · 2 sec</option></select></label>
+            <label>Concurrency<input id="bgConcurrency" type="number" min="8" max="256" value="64" required></label>
+            <label class="toggle"><input id="bgSshResources" type="checkbox"><i></i><span><b>Collect resources via SSH</b><small>Separate Linux and Windows profiles</small></span></label>
+            <label>Linux SSH username<input id="bgLinuxUser" autocomplete="off"></label><label>Linux SSH password<input id="bgLinuxPassword" type="password" autocomplete="new-password"></label>
+            <label>Windows SSH username<input id="bgWindowsUser" autocomplete="off" placeholder="DOMAIN\user"></label><label>Windows SSH password<input id="bgWindowsPassword" type="password" autocomplete="new-password"></label>
+            <p class="credential-note">Scheduled passwords are encrypted in the local data folder so scans resume after restart. Re-enter passwords when replacing the schedule. Stopping clears saved credentials.</p>
+            <button class="button ghost wide" type="button" id="copyScanSetup">Copy current scan setup</button>
+            <button class="button primary wide" type="submit" id="saveSchedule">Save & start schedule</button>
+          </section>
+        </form>
       </section>
 
       <section class="view" id="configurationView">
@@ -166,7 +210,7 @@
             <div class="conditional" id="sshFields">
               <div class="credential-profile linux-profile"><p><b>L</b> Linux SSH</p><label>Username<input id="linuxSshUsername" placeholder="root or admin"></label><label>Password<input id="linuxSshPassword" type="password" placeholder="Linux password" autocomplete="new-password"></label></div>
               <div class="credential-profile windows-profile"><p><b>W</b> Windows OpenSSH</p><label>Username<input id="windowsSshUsername" placeholder="DOMAIN\user or user"></label><label>Password<input id="windowsSshPassword" type="password" placeholder="Windows password" autocomplete="new-password"></label></div>
-              <p class="credential-note">Configure either or both profiles. Passwords stay in memory only while the scan runs and are never written to history or exports.</p>
+              <p class="credential-note">Manual scan passwords stay in memory only while the scan runs and are never written to history or exports.</p>
             </div>
             <label class="toggle" id="winrmOption"><input id="windowsResources" type="checkbox"><i></i><span><b>Windows via WinRM</b><small id="winrmHelp">Uses your current Windows identity</small></span></label>
             <label class="toggle sub-toggle hidden" id="sslToggle"><input id="winrmSsl" type="checkbox"><i></i><span><b>Use WinRM HTTPS</b></span></label>

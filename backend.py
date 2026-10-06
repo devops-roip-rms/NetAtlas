@@ -17,7 +17,14 @@ import threading
 import time
 import uuid
 import webbrowser
+try:
+    from cryptography.fernet import Fernet, InvalidToken
+except ImportError:
+    Fernet = None
+    class InvalidToken(Exception):
+        pass
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -37,7 +44,7 @@ WEB_DIR = APP_DIR / "web"
 DATA_DIR = Path(os.environ.get("NETATLAS_DATA_DIR", APP_DIR / "data")).resolve()
 DATA_DIR.mkdir(exist_ok=True)
 HOSTS_DB = DATA_DIR / "hosts.db"
-APP_VERSION = "1.2.7"
+APP_VERSION = "1.2.8"
 SENSITIVE_CONFIG_KEYS = {"ssh_password", "linux_ssh_password", "windows_ssh_password", "password"}
 
 PRIMARY_PORTS = {22: "SSH", 80: "HTTP", 443: "HTTPS", 3389: "RDP"}
@@ -695,12 +702,24 @@ def init_hosts_db() -> None:
             "ssh_auth_method": "TEXT NOT NULL DEFAULT ''",
             "ssh_auth_error": "TEXT NOT NULL DEFAULT ''",
             "site_locked": "INTEGER NOT NULL DEFAULT 0",
+            "system_id": "TEXT NOT NULL DEFAULT ''",
+            "system_position": "INTEGER NOT NULL DEFAULT 0",
+            "reachable": "INTEGER",
+            "last_checked": "TEXT NOT NULL DEFAULT ''",
+            "added_at": "TEXT NOT NULL DEFAULT ''",
         }
         for column, declaration in migrations.items():
             if column not in existing_columns:
                 connection.execute(f"ALTER TABLE remembered_hosts ADD COLUMN {column} {declaration}")
         connection.execute("CREATE INDEX IF NOT EXISTS remembered_hosts_hostname ON remembered_hosts(hostname)")
         connection.execute("CREATE INDEX IF NOT EXISTS remembered_hosts_last_seen ON remembered_hosts(last_seen DESC)")
+        connection.execute("UPDATE remembered_hosts SET added_at=first_seen WHERE added_at=''")
+        connection.executescript("""
+            CREATE TABLE IF NOT EXISTS systems (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, position INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS discoveries (site TEXT NOT NULL, ip TEXT NOT NULL, host_json TEXT NOT NULL,
+                first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, dismissed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(site, ip));
+            CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value TEXT NOT NULL);
+        """)
         connection.commit()
     finally:
         connection.close()
@@ -743,19 +762,20 @@ def remember_job_hosts(job: ScanJob) -> int:
                     services_json=excluded.services_json,
                     open_ports_json=excluded.open_ports_json,
                     web_json=excluded.web_json,
-                    os_family=excluded.os_family,
-                    os_version=excluded.os_version,
-                    os_confidence=excluded.os_confidence,
-                    os_evidence=excluded.os_evidence,
-                    resources_json=excluded.resources_json,
-                    resource_status=excluded.resource_status,
+                    os_family=CASE WHEN excluded.os_family IN ('', 'Unknown') THEN remembered_hosts.os_family ELSE excluded.os_family END,
+                    os_version=CASE WHEN excluded.os_confidence < remembered_hosts.os_confidence AND remembered_hosts.os_version<>'' THEN remembered_hosts.os_version ELSE excluded.os_version END,
+                    os_confidence=MAX(remembered_hosts.os_confidence, excluded.os_confidence),
+                    os_evidence=CASE WHEN excluded.os_confidence < remembered_hosts.os_confidence THEN remembered_hosts.os_evidence ELSE excluded.os_evidence END,
+                    resources_json=CASE WHEN excluded.resources_json='{}' THEN remembered_hosts.resources_json ELSE excluded.resources_json END,
+                    resource_status=CASE WHEN excluded.resources_json='{}' AND remembered_hosts.resources_json<>'{}' THEN remembered_hosts.resource_status ELSE excluded.resource_status END,
                     ssh_username=excluded.ssh_username,
                     ssh_auth_status=excluded.ssh_auth_status,
                     ssh_auth_method=excluded.ssh_auth_method,
                     ssh_auth_error=excluded.ssh_auth_error,
                     last_seen=excluded.last_seen,
                     last_scan_id=excluded.last_scan_id,
-                    seen_count=remembered_hosts.seen_count+1
+                    seen_count=remembered_hosts.seen_count+1,
+                    reachable=1, last_checked=excluded.last_seen
                 """,
                 (
                     site, clean_text(host.get("ip"), 64), host["hostname"], role,
@@ -769,6 +789,8 @@ def remember_job_hosts(job: ScanJob) -> int:
                     clean_text(host.get("ssh_auth_error"), 300), observed, observed, job.id,
                 ),
             )
+            connection.execute("UPDATE remembered_hosts SET reachable=1, last_checked=?, added_at=CASE WHEN added_at='' THEN ? ELSE added_at END WHERE site=? AND ip=?", (observed, utc_now(), site, clean_text(host.get("ip"), 64)))
+            connection.execute("DELETE FROM discoveries WHERE site=? AND ip=?", (site, clean_text(host.get("ip"), 64)))
             remembered += 1
         connection.commit()
     finally:
@@ -801,6 +823,11 @@ def list_remembered_hosts() -> list[dict]:
         host["site_locked"] = bool(host.get("site_locked"))
         normalize_host_record(host)
         hosts.append(host)
+    system_map = {system["id"]: system for system in list_systems()}
+    for host in hosts:
+        system = system_map.get(host.get("system_id"), {})
+        host["system_name"] = system.get("name", "")
+        host["system_order"] = system.get("position", 2147483647)
     return hosts
 
 
@@ -872,6 +899,286 @@ def delete_remembered_host(site: object, ip: object) -> dict:
     return {"ok": True, "site": site_name, "ip": address}
 
 
+def list_systems() -> list[dict]:
+    init_hosts_db()
+    with closing(hosts_db_connection()) as connection:
+        return [dict(row) for row in connection.execute("SELECT * FROM systems ORDER BY position, name")]
+
+
+def edit_system(payload: dict) -> dict:
+    init_hosts_db()
+    action = payload.get("action", "create")
+    system_id = clean_text(payload.get("id"), 40)
+    with closing(hosts_db_connection()) as connection, connection:
+        if action in {"create", "rename"}:
+            name = clean_text(payload.get("name"), 80)
+            if not name or any(c in name for c in "\\/#%=\r\n"):
+                raise ValueError("Use a system name without slashes, #, %, or =")
+            try:
+                if action == "create":
+                    system_id = uuid.uuid4().hex[:12]
+                    connection.execute("INSERT INTO systems VALUES (?, ?, (SELECT COALESCE(MAX(position), -1)+1 FROM systems))", (system_id, name))
+                elif connection.execute("UPDATE systems SET name=? WHERE id=?", (name, system_id)).rowcount != 1:
+                    raise ValueError("System not found")
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("A system with that name already exists") from exc
+        elif action == "delete":
+            connection.execute("UPDATE remembered_hosts SET system_id='', system_position=0 WHERE system_id=?", (system_id,))
+            connection.execute("DELETE FROM systems WHERE id=?", (system_id,))
+        elif action == "reorder":
+            ids = payload.get("ids")
+            current = {row[0] for row in connection.execute("SELECT id FROM systems")}
+            if not isinstance(ids, list) or len(ids) != len(current) or set(ids) != current:
+                raise ValueError("Include every system exactly once")
+            for position, identifier in enumerate(ids):
+                connection.execute("UPDATE systems SET position=? WHERE id=?", (position, identifier))
+        else:
+            raise ValueError("Unknown system action")
+    return {"ok": True, "id": system_id}
+
+
+def move_system_hosts(payload: dict) -> dict:
+    system_id = clean_text(payload.get("system_id"), 40)
+    hosts = ordered_export_hosts(selected_hosts_from_list(list_remembered_hosts(), payload.get("hosts"), "remembered inventory"))
+    keys = {(host["site"], host["ip"]) for host in hosts}
+    with closing(hosts_db_connection()) as connection, connection:
+        if system_id and not connection.execute("SELECT id FROM systems WHERE id=?", (system_id,)).fetchone():
+            raise ValueError("System not found")
+        ordered = [(row["site"], row["ip"]) for row in connection.execute(
+            "SELECT site, ip FROM remembered_hosts WHERE system_id=? ORDER BY system_position, hostname, ip", (system_id,)
+        ) if (row["site"], row["ip"]) not in keys]
+        position = int(payload.get("position", len(ordered)))
+        position = min(max(0, position), len(ordered))
+        ordered[position:position] = [(host["site"], host["ip"]) for host in hosts]
+        for index, (site, ip) in enumerate(ordered):
+            connection.execute("UPDATE remembered_hosts SET system_id=?, system_position=? WHERE site=? AND ip=?", (system_id, index, site, ip))
+    return {"ok": True}
+
+
+def remembered_overview() -> dict:
+    hosts = list_remembered_hosts()
+    reachable = [host for host in hosts if host.get("reachable") == 1]
+    summary = summarize(hosts)
+    summary.update({"reachable": len(reachable), "unreachable": sum(host.get("reachable") == 0 for host in hosts),
+                    "unchecked": sum(host.get("reachable") is None for host in hosts)})
+    services = summarize(reachable)
+    return {"summary": summary, "reachable_services": services, "breakdown": inventory_breakdown(hosts),
+            "latest_added": sorted(hosts, key=lambda h: (h["added_at"], h["site"], h["ip"]), reverse=True)[:10],
+            "last_checked": max((host.get("last_checked", "") for host in hosts), default="")}
+
+
+def inventory_key(host: dict, known: list[dict]) -> tuple[str, str]:
+    if str(host.get("cidr", "")).endswith("/32"):
+        locked = next((row for row in known if row["ip"] == host["ip"] and row.get("site_locked") and row["cidr"].endswith("/32")), None)
+        if locked:
+            return locked["site"], host["ip"]
+    return host["site"], host["ip"]
+
+
+def record_scan_inventory(job: ScanJob, plan: list[dict]) -> None:
+    known = list_remembered_hosts()
+    known_keys = {(host["site"], host["ip"]) for host in known}
+    # Only a complete, error-free scan can mark a previously known host offline.
+    if not job.cancelled and not job.errors and job.completed == len(plan):
+        answered = {inventory_key(host, known) for host in job.results}
+        with closing(hosts_db_connection()) as connection, connection:
+            for item in plan:
+                key = inventory_key(item, known)
+                if key in known_keys:
+                    connection.execute("UPDATE remembered_hosts SET reachable=?, last_checked=? WHERE site=? AND ip=?", (int(key in answered), utc_now(), *key))
+    if job.config.get("background_scan"):
+        existing, new = [], []
+        for host in job.results:
+            normalize_host_record(host)
+            key = inventory_key(host, known)
+            if key in known_keys:
+                old = next(row for row in known if (row["site"], row["ip"]) == key)
+                if not host["hostname"]:
+                    host["hostname"] = old["hostname"]
+                    host["role"] = infer_host_role(host)
+                existing.append(host)
+            else:
+                new.append(host)
+        remember_job_hosts(ScanJob(id=job.id, config={}, results=existing))
+        with closing(hosts_db_connection()) as connection, connection:
+            for host in new:
+                if not host.get("hostname"):
+                    continue
+                observed = host.get("discovered_at") or utc_now()
+                connection.execute("""INSERT INTO discoveries(site, ip, host_json, first_seen, last_seen) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(site, ip) DO UPDATE SET host_json=excluded.host_json, last_seen=excluded.last_seen""",
+                    (host["site"], host["ip"], json.dumps(host), observed, observed))
+    else:
+        for host in job.results:
+            key = inventory_key(host, known)
+            if key in known_keys and not normalize_hostname(host.get("hostname")):
+                host["hostname"] = next(row["hostname"] for row in known if (row["site"], row["ip"]) == key)
+                host["role"] = infer_host_role(host)
+        remember_job_hosts(job)
+
+
+def list_discoveries() -> list[dict]:
+    init_hosts_db()
+    with closing(hosts_db_connection()) as connection:
+        rows = connection.execute("""SELECT d.* FROM discoveries d WHERE dismissed=0 AND NOT EXISTS
+            (SELECT 1 FROM remembered_hosts h WHERE h.site=d.site AND h.ip=d.ip) ORDER BY first_seen DESC""").fetchall()
+    return [{**json.loads(row["host_json"]), "first_seen": row["first_seen"], "last_seen": row["last_seen"]} for row in rows]
+
+
+def review_discoveries(payload: dict) -> dict:
+    hosts = selected_hosts_from_list(list_discoveries(), payload.get("hosts"), "new discoveries")
+    action = payload.get("action")
+    if action == "approve":
+        # Preserve the original discovery date as the inventory's first-seen date.
+        for host in hosts:
+            host["discovered_at"] = host["first_seen"]
+        remember_job_hosts(ScanJob(id="approved-" + uuid.uuid4().hex[:8], config={}, results=hosts))
+        with closing(hosts_db_connection()) as connection, connection:
+            for host in hosts:
+                connection.execute("UPDATE remembered_hosts SET last_seen=?, last_checked=? WHERE site=? AND ip=?", (host["last_seen"], host["last_seen"], host["site"], host["ip"]))
+    elif action == "dismiss":
+        with closing(hosts_db_connection()) as connection, connection:
+            for host in hosts:
+                connection.execute("UPDATE discoveries SET dismissed=1 WHERE site=? AND ip=?", (host["site"], host["ip"]))
+    else:
+        raise ValueError("Choose approve or dismiss")
+    return {"ok": True, "count": len(hosts)}
+
+
+def prepare_scan(config: dict) -> tuple[dict, dict]:
+    config = dict(config)
+    config.pop("background_scan", None)
+    legacy_user = clean_text(config.pop("ssh_username", ""), 100)
+    legacy_password = str(config.pop("ssh_password", ""))
+    secrets = {key: str(config.pop(key, legacy_password)) for key in ("linux_ssh_password", "windows_ssh_password")}
+    config = {key: value for key, value in config.items() if key not in SENSITIVE_CONFIG_KEYS}
+    for family in ("linux", "windows"):
+        config[f"{family}_ssh_username"] = clean_text(config.get(f"{family}_ssh_username") or legacy_user, 100)
+    if any(len(value) > 1024 for value in secrets.values()):
+        raise ValueError("SSH password is too long")
+    if config.get("ssh_resources"):
+        if not paramiko:
+            raise ValueError("Password-based SSH support is not installed")
+        pairs = [(config[f"{family}_ssh_username"], secrets[f"{family}_ssh_password"]) for family in ("linux", "windows")]
+        if any(bool(user) != bool(password) for user, password in pairs):
+            raise ValueError("Each SSH profile needs both a username and password")
+        if not any(user and password for user, password in pairs):
+            raise ValueError("Configure at least one complete Linux or Windows SSH profile")
+    build_address_plan(config)
+    float(config.get("timeout", 0.5))
+    int(config.get("concurrency", 128))
+    return config, secrets
+
+
+SCHEDULE_LOCK = threading.RLock()
+SCHEDULE: dict = {"enabled": False, "interval_minutes": 60, "config": {}, "next_run": None, "active_job": None, "last_run": None, "error": ""}
+SCHEDULE_SECRETS: dict = {}
+
+
+def schedule_cipher() -> Fernet:
+    if Fernet is None:
+        raise ValueError("Install requirements.txt to save encrypted schedule credentials")
+    path = HOSTS_DB.parent / "schedule.key"
+    try:
+        with path.open("xb") as stream:
+            stream.write(Fernet.generate_key())
+        path.chmod(0o600)
+    except FileExistsError:
+        pass
+    return Fernet(path.read_bytes())
+
+
+def save_schedule() -> None:
+    stored = {key: SCHEDULE[key] for key in ("enabled", "interval_minutes", "config", "next_run", "last_run")}
+    stored["credentials"] = schedule_cipher().encrypt(json.dumps(SCHEDULE_SECRETS).encode()).decode() if SCHEDULE_SECRETS else ""
+    with closing(hosts_db_connection()) as connection, connection:
+        connection.execute("INSERT OR REPLACE INTO settings VALUES ('background_schedule', ?)", (json.dumps(stored),))
+
+
+def load_schedule() -> None:
+    with SCHEDULE_LOCK, closing(hosts_db_connection()) as connection:
+        row = connection.execute("SELECT value FROM settings WHERE name='background_schedule'").fetchone()
+        if not row:
+            return
+        try:
+            stored = json.loads(row[0])
+            encrypted = stored.pop("credentials")
+            credentials = json.loads(schedule_cipher().decrypt(encrypted.encode())) if encrypted else {}
+            SCHEDULE.update(stored)
+            SCHEDULE_SECRETS.clear()
+            SCHEDULE_SECRETS.update(credentials)
+        except (InvalidToken, ValueError, KeyError, OSError):
+            SCHEDULE.update(enabled=False, error="Saved schedule credentials could not be opened. Re-enter them to enable scheduling.")
+
+
+def schedule_public() -> dict:
+    with SCHEDULE_LOCK:
+        result = dict(SCHEDULE)
+        result["config"] = {key: value for key, value in result["config"].items() if key not in SENSITIVE_CONFIG_KEYS}
+        job = JOBS.get(result.get("active_job"))
+        result["running"] = bool(job and job.status in {"queued", "running"})
+        result["job"] = {"id": job.id, "status": job.status, "progress": job.public()["progress"], "phase": job.current_phase} if job else None
+        return result
+
+
+def configure_schedule(payload: dict) -> dict:
+    with SCHEDULE_LOCK:
+        old_schedule, old_secrets = dict(SCHEDULE), dict(SCHEDULE_SECRETS)
+        if payload.get("action") == "stop":
+            SCHEDULE.update(enabled=False, next_run=None)
+            job = JOBS.get(SCHEDULE.get("active_job"))
+            if job and job.status in {"queued", "running"}:
+                job.cancelled = True
+            SCHEDULE_SECRETS.clear()
+        else:
+            interval = int(payload.get("interval_minutes", 60))
+            if not 1 <= interval <= 10080:
+                raise ValueError("Interval must be between 1 and 10080 minutes")
+            config, secrets = prepare_scan(payload.get("config", {}))
+            if not config.get("ssh_resources"):
+                secrets = {}
+            SCHEDULE_SECRETS.clear()
+            SCHEDULE_SECRETS.update(secrets)
+            SCHEDULE.update(enabled=True, interval_minutes=interval, config=config, next_run=time.time(), error="")
+        try:
+            save_schedule()
+        except Exception:
+            SCHEDULE.clear()
+            SCHEDULE.update(old_schedule)
+            SCHEDULE_SECRETS.clear()
+            SCHEDULE_SECRETS.update(old_secrets)
+            raise
+        return schedule_public()
+
+
+def scheduler_tick() -> None:
+    with SCHEDULE_LOCK, JOBS_LOCK:
+        active = JOBS.get(SCHEDULE.get("active_job"))
+        if active and active.status not in {"queued", "running"}:
+            SCHEDULE.update(active_job=None, last_run=active.finished_at, error="; ".join(active.errors),
+                            next_run=time.time() + SCHEDULE["interval_minutes"] * 60 if SCHEDULE["enabled"] else None)
+            save_schedule()
+        if not SCHEDULE["enabled"] or SCHEDULE["next_run"] is None or time.time() < SCHEDULE["next_run"]:
+            return
+        # Do not overlap scans or overload authentication services.
+        if any(job.status in {"queued", "running"} for job in JOBS.values()):
+            return
+        job = ScanJob(id=uuid.uuid4().hex[:12], config={**SCHEDULE["config"], "background_scan": True}, secrets=dict(SCHEDULE_SECRETS))
+        JOBS[job.id] = job
+        SCHEDULE.update(active_job=job.id, next_run=None)
+        threading.Thread(target=run_scan, args=(job,), daemon=True, name=f"background-{job.id}").start()
+
+
+def scheduler_loop() -> None:
+    while True:
+        try:
+            scheduler_tick()
+        except Exception as exc:
+            with SCHEDULE_LOCK:
+                SCHEDULE["error"] = clean_text(exc)
+        time.sleep(2)
+
+
 def save_job(job: ScanJob) -> None:
     path = DATA_DIR / f"scan-{job.id}.json"
     path.write_text(json.dumps(job.public(), indent=2), encoding="utf-8")
@@ -934,10 +1241,10 @@ def run_scan(job: ScanJob) -> None:
             host["hostname"] = normalize_hostname(host.get("hostname"))
             host["role"] = infer_host_role(host)
         job.results.sort(key=lambda r: (r["site"].lower(), ipaddress.ip_address(r["ip"])))
-        if job.results:
+        if not job.cancelled:
             job.current_phase = "Updating remembered hosts"
             try:
-                remember_job_hosts(job)
+                record_scan_inventory(job, plan)
             except (OSError, sqlite3.Error) as exc:
                 if len(job.errors) < 20:
                     job.errors.append(f"Remembered hosts database: {clean_text(exc)}")
@@ -995,12 +1302,25 @@ def selected_hosts_from_list(source: list[dict], selection: object, source_name:
     return hosts
 
 
+def session_folder(host: dict) -> str:
+    family = host.get("os_family")
+    block = family if family in {"Windows", "Linux"} else "Unclassified"
+    if "system_id" in host:
+        return f"{safe_name(host.get('system_name') or 'Unassigned')}\\{block}"
+    return f"{block}\\{safe_name(host['site'])}\\{safe_name(host['vlan'])}"
+
+
+def ordered_export_hosts(hosts: list[dict]) -> list[dict]:
+    return sorted(hosts, key=lambda host: (int(host.get("system_order", 2147483647)),
+                  int(host.get("system_position", 0)), str(host.get("hostname", "")).lower(), host["site"], host["ip"]))
+
+
 def export_mobaxterm(job: ScanJob, linux_ssh_user: str = "", rdp_user: str = "", windows_ssh_user: str = "", hosts: list[dict] | None = None) -> bytes:
     sections: dict[str, list[tuple[str, str]]] = {}
-    for host in job.results if hosts is None else hosts:
+    for host in ordered_export_hosts(job.results if hosts is None else hosts):
         family = host.get("os_family")
         block = family if family in {"Windows", "Linux"} else "Unclassified"
-        folder = f"{block}\\{safe_name(host['site'])}\\{safe_name(host['vlan'])}"
+        folder = session_folder(host)
         sessions: list[tuple[str, str]] = []
         base = safe_name(host.get("hostname") or host["ip"])
         observed_ssh_user = clean_text(host.get("ssh_username"), 100)
@@ -1017,7 +1337,7 @@ def export_mobaxterm(job: ScanJob, linux_ssh_user: str = "", rdp_user: str = "",
         if sessions:
             sections.setdefault(folder, []).extend(sessions)
     lines = ["[Bookmarks]", "SubRep=NetAtlas", "ImgNum=41", ""]
-    for index, folder in enumerate(sorted(sections, key=str.lower), 1):
+    for index, folder in enumerate(sections, 1):
         lines += [f"[Bookmarks_{index}]", f"SubRep={folder}", "ImgNum=41"]
         used: dict[str, int] = {}
         for name, value in sections[folder]:
@@ -1032,10 +1352,10 @@ def export_csv(job: ScanJob, linux_ssh_user: str = "", rdp_user: str = "", windo
     buffer = io.StringIO(newline="")
     writer = csv.writer(buffer)
     writer.writerow(["name", "protocol", "host", "port", "username", "folder", "url"])
-    for host in job.results if hosts is None else hosts:
+    for host in ordered_export_hosts(job.results if hosts is None else hosts):
         family = host.get("os_family")
         block = family if family in {"Windows", "Linux"} else "Unclassified"
-        folder = f"NetAtlas\\{block}\\{host['site']}\\{host['vlan']}"
+        folder = f"NetAtlas\\{session_folder(host)}"
         name = host.get("hostname") or host["ip"]
         observed_ssh_user = clean_text(host.get("ssh_username"), 100)
         if family == "Windows":
@@ -1120,6 +1440,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         try:
             path = urlparse(self.path).path
+            if path == "/api/systems":
+                self.send_json(edit_system(self.json_body()))
+                return
+            if path == "/api/systems/move":
+                self.send_json(move_system_hosts(self.json_body()))
+                return
+            if path == "/api/discoveries/review":
+                self.send_json(review_discoveries(self.json_body()))
+                return
+            if path == "/api/schedule":
+                self.send_json(configure_schedule(self.json_body()))
+                return
             if path == "/api/remembered-hosts/role":
                 payload = self.json_body()
                 self.send_json(update_remembered_role(payload.get("site"), payload.get("ip"), payload.get("role")))
@@ -1176,30 +1508,14 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("Export format must be mxtsessions, csv, or inventory")
                 return
             if path == "/api/scans":
-                config = self.json_body()
-                legacy_user = clean_text(config.pop("ssh_username", ""), 100)
-                legacy_password = str(config.pop("ssh_password", ""))
-                linux_password = str(config.pop("linux_ssh_password", legacy_password))
-                windows_password = str(config.pop("windows_ssh_password", legacy_password))
-                config["linux_ssh_username"] = clean_text(config.get("linux_ssh_username") or legacy_user, 100)
-                config["windows_ssh_username"] = clean_text(config.get("windows_ssh_username") or legacy_user, 100)
-                if max(len(linux_password), len(windows_password)) > 1024:
-                    raise ValueError("SSH password is too long")
-                if config.get("ssh_resources") and not paramiko:
-                    raise ValueError("Password-based SSH support is not installed in this runtime")
-                linux_partial = bool(config["linux_ssh_username"]) != bool(linux_password)
-                windows_partial = bool(config["windows_ssh_username"]) != bool(windows_password)
-                profile_ready = (config["linux_ssh_username"] and linux_password) or (config["windows_ssh_username"] and windows_password)
-                if config.get("ssh_resources") and (linux_partial or windows_partial):
-                    raise ValueError("Each SSH profile needs both a username and password")
-                if config.get("ssh_resources") and not profile_ready:
-                    raise ValueError("Configure at least one complete Linux or Windows SSH profile")
-                build_address_plan(config)  # validate before creating a job
+                config, secrets = prepare_scan(self.json_body())
                 job = ScanJob(
                     id=uuid.uuid4().hex[:12], config=config,
-                    secrets={"linux_ssh_password": linux_password, "windows_ssh_password": windows_password},
+                    secrets=secrets,
                 )
                 with JOBS_LOCK:
+                    if any(current.status in {"queued", "running"} for current in JOBS.values()):
+                        raise ValueError("Another scan is running. Wait for it or stop it before starting a new scan.")
                     JOBS[job.id] = job
                 threading.Thread(target=run_scan, args=(job,), daemon=True, name=f"scan-{job.id}").start()
                 self.send_json(job.public(), HTTPStatus.ACCEPTED)
@@ -1210,8 +1526,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True})
                 return
             self.send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
-        except (ValueError, json.JSONDecodeError) as exc:
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
             self.send_json({"error": clean_text(exc, 500)}, HTTPStatus.BAD_REQUEST)
+        except (OSError, sqlite3.Error) as exc:
+            self.send_json({"error": clean_text(exc, 500)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def do_GET(self) -> None:
         path = unquote(urlparse(self.path).path)
@@ -1234,6 +1552,18 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/remembered-hosts":
             self.send_json(list_remembered_hosts())
+            return
+        if path == "/api/overview":
+            self.send_json(remembered_overview())
+            return
+        if path == "/api/systems":
+            self.send_json(list_systems())
+            return
+        if path == "/api/discoveries":
+            self.send_json(list_discoveries())
+            return
+        if path == "/api/schedule":
+            self.send_json(schedule_public())
             return
         match = re.fullmatch(r"/api/scans/([a-f0-9]+)", path)
         if match:
@@ -1304,6 +1634,9 @@ def load_saved_jobs() -> None:
                     setattr(job, key, data[key])
             for host in job.results:
                 normalize_host_record(host)
+            if job.status in {"running", "queued"}:
+                job.status = "cancelled"
+                job.current_phase = "Interrupted by restart"
             JOBS[job.id] = job
         except (OSError, json.JSONDecodeError, KeyError):
             continue
@@ -1317,6 +1650,8 @@ def main() -> None:
     args = parser.parse_args()
     init_hosts_db()
     load_saved_jobs()
+    load_schedule()
+    threading.Thread(target=scheduler_loop, daemon=True, name="background-scheduler").start()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}"
     print(f"NetAtlas is running at {url}")

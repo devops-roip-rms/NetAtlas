@@ -5,6 +5,9 @@ const state = {
   hostTable: {sortKey: "endpoint", sortDir: "asc", filters: {}},
   rememberedTable: {sortKey: "last_seen", sortDir: "desc", filters: {}}
 };
+Object.assign(state, {systems: [], systemSelected: new Set(), discoveries: [], discoverySelected: new Set(), schedule: null});
+// Keep scan progress with scan results; Overview only displays remembered inventory.
+$("#resultsView").prepend($(".scan-hero"));
 const savedTheme = localStorage.getItem("netatlas-theme");
 if (savedTheme) document.documentElement.dataset.theme = savedTheme;
 $("#themeButton").addEventListener("click", () => {
@@ -25,9 +28,11 @@ function toast(message) {
 function go(view) {
   $$(".view").forEach(x => x.classList.toggle("active", x.id === `${view}View`));
   $$(".nav-item").forEach(x => x.classList.toggle("active", x.dataset.view === view));
-  const labels = {overview:"Good morning, operator.", results:"Your discovered estate.", remembered:"Your durable host inventory.", configuration:"Define the scan boundary."};
+  const labels = {overview:"Your remembered estate.", results:"Your discovered estate.", remembered:"Your durable host inventory.", systems:"Your ordered session library.", discoveries:"Review new discoveries.", background:"Your automatic scan schedule.", configuration:"Define the scan boundary."};
   $("#pageTitle").textContent = labels[view];
-  if (view === "remembered") loadRemembered();
+  if (["remembered", "overview", "systems"].includes(view)) loadRemembered();
+  if (view === "discoveries") loadDiscoveries();
+  if (view === "background") loadSchedule();
 }
 $$(".nav-item").forEach(x => x.addEventListener("click", () => go(x.dataset.view)));
 $$('[data-go]').forEach(x => x.addEventListener("click", () => go(x.dataset.go)));
@@ -99,7 +104,7 @@ async function checkHealth() {
       $("#sshAuthOption").classList.add("disabled-option");
       $("#sshAuthHelp").textContent = "Install requirements or use the Docker image";
     }
-    await Promise.all([loadHistory(), loadRemembered()]);
+    await Promise.all([loadHistory(), loadRemembered(), loadDiscoveries(), loadSchedule(true)]);
   } catch (_) {
     $("#backendLabel").textContent = "Scanner offline"; $("#capabilities").textContent = "Restart NetAtlas and refresh this page.";
   }
@@ -137,7 +142,7 @@ $("#scanForm").addEventListener("submit", async (event) => {
     if (config.ssh_resources && !profileReady) throw new Error("Configure at least one complete Linux or Windows SSH profile.");
     const job = await api("/api/scans", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(config)});
     $("#linuxSshPassword").value = ""; $("#windowsSshPassword").value = "";
-    state.job = job; go("overview"); showRunning(job); clearInterval(state.timer); state.timer = setInterval(poll, 900); poll();
+    state.job = job; go("results"); showRunning(job); clearInterval(state.timer); state.timer = setInterval(poll, 900); poll();
   } catch (error) { toast(error.message); }
 });
 
@@ -169,21 +174,31 @@ function render(job) {
   if (state.selectionJobId !== job.id) { state.selected.clear(); state.selectionJobId = job.id; }
   $("#progressPercent").textContent = `${Math.round(p)}%`; $("#progressBar").style.width = `${p}%`; $("#progressPhase").textContent = job.current_phase;
   $("#progressChecked").textContent = (job.completed || 0).toLocaleString(); $("#progressFound").textContent = (s.hosts || 0).toLocaleString();
-  $("#metricHosts").textContent = s.hosts || 0; $("#metricSsh").textContent = s.ssh || 0; $("#metricRdp").textContent = s.rdp || 0; $("#metricWeb").textContent = s.web || 0;
-  $("#metricHostsDetail").textContent = job.status === "running" ? `${Math.round(p)}% of scope checked` : job.finished_at ? "Latest completed scan" : "No scan yet";
-  $("#navHostCount").textContent = s.hosts || 0; $("#osWindows").textContent = s.windows || 0; $("#osLinux").textContent = s.linux || 0; $("#osUnknown").textContent = s.unknown || 0; $("#donutTotal").textContent = s.hosts || 0;
-  const total = Math.max(s.hosts || 0, 1), win = (s.windows || 0) / total * 100, lin = win + (s.linux || 0) / total * 100;
-  $("#osDonut").style.setProperty("--win", `${win}%`); $("#osDonut").style.setProperty("--lin", `${lin}%`);
+  $("#navHostCount").textContent = s.hosts || 0;
   const validKeys = new Set((job.results || []).map(hostKey));
   state.selected = new Set([...state.selected].filter(key => validKeys.has(key)));
-  renderRecent(job.results || []); renderBreakdowns(job.breakdown || {}); renderTable();
+  renderTable();
   if (["complete","failed","cancelled"].includes(job.status)) finishHero(job);
+}
+
+function renderOverview(data) {
+  const s = data.summary, services = data.reachable_services;
+  $("#metricRemembered").textContent = s.hosts;
+  $("#metricHosts").textContent = s.reachable; $("#metricOffline").textContent = s.unreachable;
+  $("#metricUnchecked").textContent = `${s.unchecked} unchecked`;
+  $("#metricSsh").textContent = services.ssh; $("#metricRdp").textContent = services.rdp; $("#metricWeb").textContent = services.web;
+  $("#overviewChecked").textContent = `All totals use Remembered Hosts. Reachability is from each host's last completed check${data.last_checked ? `; latest check ${new Date(data.last_checked).toLocaleString()}` : ""}.`;
+  $("#osWindows").textContent = s.windows; $("#osLinux").textContent = s.linux; $("#osUnknown").textContent = s.unknown; $("#donutTotal").textContent = s.hosts;
+  const total = Math.max(s.hosts, 1), win = s.windows / total * 100, lin = win + s.linux / total * 100;
+  $("#osDonut").style.setProperty("--win", `${win}%`); $("#osDonut").style.setProperty("--lin", `${lin}%`);
+  renderRecent(data.latest_added); renderBreakdowns(data.breakdown);
 }
 
 function renderRecent(results) {
   const el = $("#recentHosts");
-  if (!results.length) { el.className = "recent-hosts empty-state"; el.innerHTML = "<span>⌁</span><h4>No hosts discovered yet</h4><p>Start a scan to build your inventory.</p>"; return; }
-  el.className = "recent-hosts"; el.innerHTML = results.slice(-5).reverse().map(host => `<div class="host-row"><span class="host-avatar">${host.os_family === "Windows" ? "W" : host.os_family === "Linux" ? "L" : "?"}</span><div><strong>${esc(host.hostname || host.ip)}</strong><small>${esc(host.ip)} · ${esc(host.role || "Network Endpoint")}</small></div><div class="service-chips">${host.services.map(serviceChip).join("")}</div><div><strong>${esc(host.site)}</strong><small>${esc(host.vlan)}</small></div></div>`).join("");
+  if (!results.length) { el.className = "recent-hosts empty-state"; el.innerHTML = "<span>★</span><h4>No remembered hosts yet</h4><p>Run a manual scan or approve background discoveries.</p>"; return; }
+  el.className = "recent-hosts"; el.innerHTML = results.map((host, index) => `<button class="host-row recent-memory" data-recent="${index}"><span class="host-avatar">${host.os_family === "Windows" ? "W" : host.os_family === "Linux" ? "L" : "?"}</span><div><strong>${esc(host.hostname)}</strong><small>${esc(host.ip)} · ${esc(host.site)}</small></div><div><strong>${esc(new Date(host.added_at).toLocaleDateString())}</strong><small>${esc(new Date(host.added_at).toLocaleTimeString())} · added to Remembered</small></div></button>`).join("");
+  $$('[data-recent]').forEach(button => button.onclick = () => showHost(results[Number(button.dataset.recent)], true));
 }
 
 function renderBreakdowns(breakdown) {
@@ -304,7 +319,7 @@ function showHost(host, remembered = false) {
   if (host.services.includes("HTTP")) links.push(`<a class="detail-link" href="http://${esc(host.ip)}" target="_blank" rel="noreferrer">Open HTTP ↗</a>`);
   if (host.services.includes("HTTPS")) links.push(`<a class="detail-link" href="https://${esc(host.ip)}" target="_blank" rel="noreferrer">Open HTTPS ↗</a>`);
   const resources = Object.entries(host.resources || {}).map(([key, value]) => `<div class="detail-stat"><small>${esc(key.replaceAll("_", " "))}</small><strong>${esc(value)}</strong></div>`).join("");
-  const memory = remembered ? `<div class="detail-stat"><small>First seen</small><strong>${esc(new Date(host.first_seen).toLocaleString())}</strong></div><div class="detail-stat"><small>Last seen</small><strong>${esc(new Date(host.last_seen).toLocaleString())} · ${host.seen_count} scans</strong></div>` : "";
+  const memory = remembered ? `<div class="detail-stat"><small>Added to Remembered</small><strong>${esc(new Date(host.added_at || host.first_seen).toLocaleString())}</strong></div><div class="detail-stat"><small>Last check / status</small><strong>${host.last_checked ? esc(new Date(host.last_checked).toLocaleString()) : "Unchecked"} · ${host.reachable === 1 ? "Reachable" : host.reachable === 0 ? "Unreachable" : "Unknown"}</strong></div><div class="detail-stat"><small>System</small><strong>${esc(host.system_name || "Unassigned")}</strong></div><div class="detail-stat"><small>Last seen</small><strong>${esc(new Date(host.last_seen).toLocaleString())} · ${host.seen_count} sightings</strong></div>` : "";
   const sshDetails = (host.services || []).includes("SSH") ? `<div class="detail-stat"><small>SSH username</small><strong>${esc(sshUsernameFor(host) || "Not configured")}</strong></div><div class="detail-stat"><small>SSH authentication</small><strong>${esc(host.ssh_auth_status || "Not attempted")}${host.ssh_auth_method ? ` · ${esc(host.ssh_auth_method)}` : ""}</strong></div>${host.ssh_auth_error ? `<div class="detail-stat detail-wide"><small>SSH diagnostic</small><strong>${esc(host.ssh_auth_error)}</strong></div>` : ""}` : "";
   const deleteAction = remembered ? `<div class="detail-section danger-zone"><h4>Inventory control</h4><button class="danger-button" id="deleteRememberedDetail" type="button">Remove from inventory</button></div>` : "";
   $("#hostDetail").innerHTML = `<div class="host-detail-hero"><p class="eyebrow">${esc(host.site)} · ${esc(host.vlan)}</p><h2>${esc(host.hostname || "Hostname unresolved")}</h2><p>${esc(host.ip)} · ${esc(host.cidr)}</p><span class="detail-role">${esc(host.role || "Network Endpoint")}</span></div><div class="host-detail-body"><div class="detail-grid"><div class="detail-stat"><small>Role</small><strong>${esc(host.role || "Network Endpoint")}</strong></div><div class="detail-stat"><small>Operating system</small><strong>${esc(host.os_version || host.os_family)}</strong></div><div class="detail-stat"><small>OS evidence</small><strong>${esc(host.os_evidence)} · ${host.os_confidence || 0}%</strong></div><div class="detail-stat"><small>Hostname source</small><strong>${esc(host.hostname_source || "Resolved")}</strong></div><div class="detail-stat"><small>Resource status</small><strong>${esc(host.resource_status || "Not collected")}</strong></div>${sshDetails}${memory}</div><div class="detail-section"><h4>Verified connection paths</h4><div class="service-chips">${host.services.map(serviceChip).join("")}</div></div>${resources ? `<div class="detail-section"><h4>Observed resources</h4><div class="detail-grid">${resources}</div></div>` : ""}${links.length ? `<div class="detail-section"><h4>Connection shortcuts</h4><div class="detail-links">${links.join("")}</div></div>` : ""}${deleteAction}</div>`;
@@ -375,7 +390,7 @@ function renderRemembered() {
     button.disabled = true;
     try {
       const updated = await api("/api/remembered-hosts/role", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({site:host.site, ip:host.ip, role})});
-      Object.assign(host, updated); renderRemembered(); toast(`Saved role for ${host.hostname}.`);
+      Object.assign(host, updated); await loadRemembered(); toast(`Saved role for ${host.hostname}.`);
     } catch (error) { button.disabled = false; toast(error.message); }
   }));
   $$('[data-role-input]').forEach(input => input.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); input.closest("tr").querySelector("[data-role-save]").click(); } }));
@@ -388,9 +403,11 @@ function renderRemembered() {
     try {
       const updated = await api("/api/remembered-hosts/site", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({site:host.site, ip:host.ip, new_site:newSite})});
       const wasSelected = state.rememberedSelected.delete(oldKey);
+      const systemWasSelected = state.systemSelected.delete(oldKey);
       Object.assign(host, updated);
       if (wasSelected) state.rememberedSelected.add(hostKey(host));
-      renderRemembered(); toast(`Moved ${host.hostname} to ${host.site}.`);
+      if (systemWasSelected) state.systemSelected.add(hostKey(host));
+      await loadRemembered(); toast(`Moved ${host.hostname} to ${host.site}.`);
     } catch (error) { button.disabled = false; toast(error.message); }
   }));
   $$('[data-site-input]').forEach(input => input.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); input.closest("tr").querySelector("[data-site-save]").click(); } }));
@@ -417,17 +434,19 @@ async function confirmDeleteRemembered(host) {
     state.rememberedSelected.delete(hostKey(host));
     state.remembered = state.remembered.filter(item => !(item.site === host.site && item.ip === host.ip));
     if ($("#hostDialog").open) $("#hostDialog").close();
-    renderRemembered();
+    await loadRemembered();
     toast(`Removed ${label} from inventory.`);
   } catch (error) { toast(error.message); }
 }
 
 async function loadRemembered() {
   try {
-    state.remembered = await api("/api/remembered-hosts");
+    const [hosts, overview, systems] = await Promise.all([api("/api/remembered-hosts"), api("/api/overview"), api("/api/systems")]);
+    state.remembered = hosts; state.systems = systems;
     const validKeys = new Set(state.remembered.map(hostKey));
     state.rememberedSelected = new Set([...state.rememberedSelected].filter(key => validKeys.has(key)));
-    renderRemembered();
+    state.systemSelected = new Set([...state.systemSelected].filter(key => validKeys.has(key)));
+    renderRemembered(); renderOverview(overview); renderSystems();
   } catch (error) { toast(`Remembered hosts unavailable: ${error.message}`); }
 }
 $("#rememberedSearch").addEventListener("input", renderRemembered);
@@ -447,21 +466,21 @@ $("#rememberedClearSelectionButton").addEventListener("click", () => { state.rem
 
 $("#cancelButton").addEventListener("click", async () => { if (state.job) { await api(`/api/scans/${state.job.id}/cancel`, {method:"POST"}); toast("Stopping after current checks finish…"); } });
 function openExportDialog(source) {
-  const count = source === "remembered" ? selectedRemembered().length : selectedResults().length;
+  const count = exportHosts(source).length;
   if (!count) { toast("Select at least one host first."); return; }
   state.exportSource = source;
   if (!$("#exportLinuxSshUser").value) $("#exportLinuxSshUser").value = state.job?.config?.linux_ssh_username || "";
   if (!$("#exportWindowsSshUser").value) $("#exportWindowsSshUser").value = state.job?.config?.windows_ssh_username || "";
-  $("#exportSelectionSummary").textContent = `Creates sessions for ${count} selected ${source === "remembered" ? "remembered " : ""}host${count === 1 ? "" : "s"}. Windows receives SSH and RDP; Linux receives SSH.`;
+  $("#exportSelectionSummary").textContent = `Creates sessions for ${count} selected host${count === 1 ? "" : "s"}.${source !== "scan" ? " Folders follow your saved systems and server order." : ""} Windows receives SSH and RDP; Linux receives SSH.`;
   $("#exportDialog").showModal();
 }
 $("#exportButton").addEventListener("click", () => openExportDialog("scan"));
 $("#rememberedExportButton").addEventListener("click", () => openExportDialog("remembered"));
 async function downloadSelected(format, source = state.exportSource) {
-  const hosts = source === "remembered" ? selectedRemembered() : selectedResults();
+  const hosts = exportHosts(source);
   if (!hosts.length || (source === "scan" && !state.job)) { toast("Select at least one host first."); return; }
   try {
-    const endpoint = source === "remembered" ? "/api/remembered-hosts/export" : `/api/scans/${state.job.id}/export`;
+    const endpoint = source !== "scan" ? "/api/remembered-hosts/export" : `/api/scans/${state.job.id}/export`;
     const response = await fetch(endpoint, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({
       format, hosts: hosts.map(host => ({site:host.site, ip:host.ip})),
       linux_ssh_user:$("#exportLinuxSshUser").value, windows_ssh_user:$("#exportWindowsSshUser").value, rdp_user:$("#exportRdpUser").value
@@ -477,6 +496,196 @@ async function downloadSelected(format, source = state.exportSource) {
 $("#inventoryButton").addEventListener("click", () => downloadSelected("inventory", "scan"));
 $("#downloadMoba").addEventListener("click", () => downloadSelected("mxtsessions"));
 $("#downloadCsv").addEventListener("click", () => downloadSelected("csv"));
+
+function exportHosts(source) {
+  if (source === "systems") return state.remembered.filter(host => state.systemSelected.has(hostKey(host)));
+  return source === "remembered" ? selectedRemembered() : selectedResults();
+}
+
+const post = (path, body) => api(path, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+const hostSelection = hosts => hosts.map(({site, ip}) => ({site, ip}));
+const systemHosts = id => state.remembered.filter(host => (host.system_id || "") === id).sort((a,b) => a.system_position - b.system_position || a.hostname.localeCompare(b.hostname));
+function visibleSystemHosts(id) {
+  const query = $("#systemSearch").value.trim().toLowerCase();
+  return systemHosts(id).filter(host => !query || `${host.hostname} ${host.ip} ${host.site} ${host.vlan} ${host.role} ${host.os_version} ${host.system_name || "Unassigned"}`.toLowerCase().includes(query));
+}
+function systemSelectionControls() {
+  const count = exportHosts("systems").length;
+  $("#systemSelectionCount").textContent = `${count} selected`;
+  $("#systemsExportButton").disabled = !count;
+  $("#systemMoveButton").disabled = !count;
+}
+async function moveHosts(id, hosts, position) {
+  if (!hosts.length) return;
+  try {
+    await post("/api/systems/move", {system_id:id, hosts:hostSelection(hosts), ...(position == null ? {} : {position})});
+    await loadRemembered(); toast(`Saved order for ${hosts.length} host${hosts.length === 1 ? "" : "s"}.`);
+  } catch (error) { toast(error.message); }
+}
+async function reorderSystem(id, direction) {
+  const ids = state.systems.map(system => system.id), index = ids.indexOf(id), target = index + direction;
+  if (target < 0 || target >= ids.length) return;
+  [ids[index], ids[target]] = [ids[target], ids[index]];
+  try { await post("/api/systems", {action:"reorder", ids}); await loadRemembered(); } catch (error) { toast(error.message); }
+}
+function renderSystems() {
+  const groups = [...state.systems, {id:"", name:"Unassigned"}];
+  const oldTarget = $("#systemMoveTarget").value;
+  $("#systemMoveTarget").innerHTML = groups.map(system => `<option value="${esc(system.id)}">${esc(system.name)}</option>`).join("");
+  if (groups.some(system => system.id === oldTarget)) $("#systemMoveTarget").value = oldTarget;
+  $("#systemsBoard").innerHTML = groups.map((system, index) => {
+    const hosts = visibleSystemHosts(system.id);
+    return `<section class="panel system-card" data-system="${esc(system.id)}"><header><div><h3>${esc(system.name)}</h3><small>${systemHosts(system.id).length} servers · ${hosts.length} visible</small></div><div class="system-actions">${system.id ? `<button class="button ghost compact" data-system-up ${index === 0 ? "disabled" : ""} aria-label="Move system up">↑</button><button class="button ghost compact" data-system-down ${index === state.systems.length-1 ? "disabled" : ""} aria-label="Move system down">↓</button><button class="button ghost compact" data-system-rename>Rename</button><button class="danger-icon" data-system-delete aria-label="Delete system">×</button>` : ""}</div></header><div class="system-hosts">${hosts.map(host => {
+      const idx = state.remembered.indexOf(host), checked = state.systemSelected.has(hostKey(host));
+      return `<div class="system-host ${checked ? "selected" : ""}" draggable="true" data-system-host="${idx}"><input type="checkbox" ${checked ? "checked" : ""} aria-label="Select ${esc(host.hostname)}"><span class="drag-handle" aria-hidden="true">⠿</span><button class="system-host-open"><strong>${esc(host.hostname)}</strong><small>${esc(host.ip)} · ${esc(host.site)} · ${esc(host.os_version || host.os_family)}</small></button><button class="order-button" data-host-up aria-label="Move host up">↑</button><button class="order-button" data-host-down aria-label="Move host down">↓</button></div>`;
+    }).join("") || '<p class="drop-placeholder">Drop servers here, or select servers and use Move selected.</p>'}</div></section>`;
+  }).join("");
+  $$('[data-system-host]').forEach(row => {
+    const host = state.remembered[Number(row.dataset.systemHost)];
+    row.querySelector("input").onchange = event => {
+      event.target.checked ? state.systemSelected.add(hostKey(host)) : state.systemSelected.delete(hostKey(host));
+      row.classList.toggle("selected", event.target.checked); systemSelectionControls();
+    };
+    row.querySelector(".system-host-open").onclick = () => showHost(host, true);
+    row.ondragstart = event => {
+      state.dragging = true;
+      const hosts = state.systemSelected.has(hostKey(host)) ? exportHosts("systems") : [host];
+      event.dataTransfer.setData("application/netatlas-hosts", JSON.stringify(hostSelection(hosts)));
+      event.dataTransfer.effectAllowed = "move";
+    };
+    row.ondragend = () => { state.dragging = false; $$(".drop-active").forEach(el => el.classList.remove("drop-active")); };
+    for (const [selector, direction] of [["[data-host-up]", -1], ["[data-host-down]", 1]]) {
+      const all = systemHosts(host.system_id || ""), index = all.indexOf(host);
+      const button = row.querySelector(selector); button.disabled = index + direction < 0 || index + direction >= all.length;
+      button.onclick = () => moveHosts(host.system_id || "", [host], index + direction);
+    }
+  });
+  $$('[data-system]').forEach(card => {
+    const id = card.dataset.system;
+    card.ondragover = event => { if (event.dataTransfer.types.includes("application/netatlas-hosts")) { event.preventDefault(); card.classList.add("drop-active"); } };
+    card.ondragleave = event => { if (!card.contains(event.relatedTarget)) card.classList.remove("drop-active"); };
+    card.ondrop = event => {
+      event.preventDefault(); card.classList.remove("drop-active"); state.dragging = false;
+      try {
+        const selection = JSON.parse(event.dataTransfer.getData("application/netatlas-hosts"));
+        const keys = new Set(selection.map(hostKey)), hosts = state.remembered.filter(host => keys.has(hostKey(host)));
+        const targetRow = event.target.closest("[data-system-host]");
+        const target = targetRow ? state.remembered[Number(targetRow.dataset.systemHost)] : null;
+        const remaining = systemHosts(id).filter(host => !keys.has(hostKey(host)));
+        if (target && keys.has(hostKey(target))) return;
+        moveHosts(id, hosts, target ? remaining.indexOf(target) : remaining.length);
+      } catch (_) { toast("Drag remembered servers into a system."); }
+    };
+    if (!id) return;
+    card.querySelector("[data-system-up]").onclick = () => reorderSystem(id, -1);
+    card.querySelector("[data-system-down]").onclick = () => reorderSystem(id, 1);
+    card.querySelector("[data-system-rename]").onclick = async () => {
+      const name = window.prompt("System name", state.systems.find(system => system.id === id).name);
+      if (!name?.trim()) return;
+      try { await post("/api/systems", {action:"rename", id, name}); await loadRemembered(); } catch (error) { toast(error.message); }
+    };
+    card.querySelector("[data-system-delete]").onclick = async () => {
+      if (!window.confirm("Delete this system? Its hosts will move to Unassigned and remain remembered.")) return;
+      try { await post("/api/systems", {action:"delete", id}); await loadRemembered(); } catch (error) { toast(error.message); }
+    };
+  });
+  systemSelectionControls();
+}
+$("#newSystemForm").onsubmit = async event => {
+  event.preventDefault();
+  try { await post("/api/systems", {name:$("#newSystemName").value}); $("#newSystemName").value = ""; await loadRemembered(); } catch (error) { toast(error.message); }
+};
+$("#systemSearch").oninput = renderSystems;
+$("#systemSelectAll").onclick = () => { [...state.systems, {id:""}].flatMap(system => visibleSystemHosts(system.id)).forEach(host => state.systemSelected.add(hostKey(host))); renderSystems(); };
+$("#systemClear").onclick = () => { state.systemSelected.clear(); renderSystems(); };
+$("#systemMoveButton").onclick = () => moveHosts($("#systemMoveTarget").value, exportHosts("systems"));
+$("#systemsExportButton").onclick = () => openExportDialog("systems");
+
+function filteredDiscoveries() {
+  const query = $("#discoverySearch").value.trim().toLowerCase();
+  return state.discoveries.filter(host => !query || `${host.hostname} ${host.ip} ${host.site} ${host.vlan} ${host.os_version} ${host.services.join(" ")}`.toLowerCase().includes(query));
+}
+function renderDiscoveries() {
+  $("#navDiscoveryCount").textContent = state.discoveries.length;
+  const count = state.discoveries.filter(host => state.discoverySelected.has(hostKey(host))).length;
+  $("#discoverySelectionCount").textContent = `${count} selected`;
+  $("#approveDiscoveries").disabled = !count; $("#dismissDiscoveries").disabled = !count;
+  $("#discoveryTable").innerHTML = filteredDiscoveries().map(host => `<tr><td class="select-cell"><input type="checkbox" data-discovery="${state.discoveries.indexOf(host)}" ${state.discoverySelected.has(hostKey(host)) ? "checked" : ""} aria-label="Select ${esc(host.hostname)}"></td><td><strong>${esc(host.hostname)}</strong><small>${esc(host.ip)}</small></td><td>${esc(host.site)}<small>${esc(host.vlan)}</small></td><td><div class="service-chips">${host.services.map(serviceChip).join("")}</div></td><td>${esc(host.os_version || host.os_family)}</td><td>${esc(resourceText(host))}</td><td>${esc(new Date(host.first_seen).toLocaleString())}</td><td>${esc(new Date(host.last_seen).toLocaleString())}</td></tr>`).join("") || '<tr><td colspan="8" class="table-empty">No new resolved hosts awaiting review.</td></tr>';
+  $$('[data-discovery]').forEach(input => input.onchange = () => {
+    const host = state.discoveries[Number(input.dataset.discovery)];
+    input.checked ? state.discoverySelected.add(hostKey(host)) : state.discoverySelected.delete(hostKey(host)); renderDiscoveries();
+  });
+}
+async function loadDiscoveries() {
+  try {
+    state.discoveries = await api("/api/discoveries");
+    const keys = new Set(state.discoveries.map(hostKey));
+    state.discoverySelected = new Set([...state.discoverySelected].filter(key => keys.has(key)));
+    renderDiscoveries();
+  } catch (error) { toast(error.message); }
+}
+async function reviewDiscoveries(action) {
+  const hosts = state.discoveries.filter(host => state.discoverySelected.has(hostKey(host)));
+  if (!hosts.length) return;
+  if (action === "dismiss" && !window.confirm(`Dismiss ${hosts.length} hosts? Future background scans will keep these hosts hidden.`)) return;
+  try {
+    await post("/api/discoveries/review", {action, hosts:hostSelection(hosts)});
+    state.discoverySelected.clear(); await Promise.all([loadDiscoveries(), loadRemembered()]);
+    toast(action === "approve" ? `Added ${hosts.length} hosts to Remembered.` : `Dismissed ${hosts.length} hosts.`);
+  } catch (error) { toast(error.message); }
+}
+$("#discoverySearch").oninput = renderDiscoveries;
+$("#discoverySelectAll").onclick = () => { filteredDiscoveries().forEach(host => state.discoverySelected.add(hostKey(host))); renderDiscoveries(); };
+$("#discoveryClear").onclick = () => { state.discoverySelected.clear(); renderDiscoveries(); };
+$("#discoveryRefresh").onclick = loadDiscoveries;
+$("#approveDiscoveries").onclick = () => reviewDiscoveries("approve");
+$("#dismissDiscoveries").onclick = () => reviewDiscoveries("dismiss");
+
+function fillSchedule(config) {
+  const sites = config.sites || [];
+  for (const [index, prefix] of [[0, "A"], [1, "B"]]) {
+    $("#bgSite" + prefix + "Name").value = sites[index]?.name || "Site " + prefix;
+    $("#bgSite" + prefix + "Vlans").value = (sites[index]?.vlans || []).map(vlan => `${vlan.name}, ${vlan.cidr}`).join("\n");
+  }
+  $("#bgTimeout").value = config.timeout || 0.5; $("#bgConcurrency").value = config.concurrency || 64;
+  $("#bgSshResources").checked = Boolean(config.ssh_resources);
+  $("#bgLinuxUser").value = config.linux_ssh_username || ""; $("#bgWindowsUser").value = config.windows_ssh_username || "";
+}
+async function loadSchedule(fill = false) {
+  try {
+    state.schedule = await api("/api/schedule");
+    if (fill) { fillSchedule(state.schedule.config); $("#bgInterval").value = state.schedule.interval_minutes; }
+    const s = state.schedule;
+    $("#stopSchedule").disabled = !s.enabled && !s.running;
+    $("#scheduleStatus").innerHTML = `<strong>${s.enabled ? "Schedule enabled" : "Schedule stopped"}</strong><span>${s.running ? `Scanning · ${Math.round(s.job.progress)}% · ${esc(s.job.phase)}` : s.enabled ? `Next run: ${s.next_run ? new Date(s.next_run * 1000).toLocaleString() : "after active scan finishes"}` : "Save a schedule to start scanning."}</span><small>Interval: ${s.interval_minutes} minutes${s.last_run ? ` · Last finished: ${esc(new Date(s.last_run).toLocaleString())}` : ""}</small>${s.error ? `<p class="schedule-error">${esc(s.error)}</p>` : ""}`;
+  } catch (error) { toast(error.message); }
+}
+$("#copyScanSetup").onclick = () => {
+  const config = scanConfig(); fillSchedule(config);
+  $("#bgLinuxPassword").value = config.linux_ssh_password; $("#bgWindowsPassword").value = config.windows_ssh_password;
+  toast("Copied VLANs and SSH profiles from Scan setup.");
+};
+$("#scheduleForm").onsubmit = async event => {
+  event.preventDefault(); const button = $("#saveSchedule"); button.disabled = true;
+  try {
+    await post("/api/schedule", {interval_minutes:Number($("#bgInterval").value), config:{
+      sites:[{name:$("#bgSiteAName").value.trim(), vlans:parseVlans($("#bgSiteAVlans").value)}, {name:$("#bgSiteBName").value.trim(), vlans:parseVlans($("#bgSiteBVlans").value)}],
+      concurrency:Number($("#bgConcurrency").value), timeout:Number($("#bgTimeout").value), auxiliary_ports:true, ssh_resources:$("#bgSshResources").checked,
+      linux_ssh_username:$("#bgLinuxUser").value.trim(), linux_ssh_password:$("#bgLinuxPassword").value,
+      windows_ssh_username:$("#bgWindowsUser").value.trim(), windows_ssh_password:$("#bgWindowsPassword").value
+    }});
+    $("#bgLinuxPassword").value = ""; $("#bgWindowsPassword").value = "";
+    await loadSchedule(); toast("Schedule saved. New hosts will wait for your approval.");
+  } catch (error) { toast(error.message); } finally { button.disabled = false; }
+};
+$("#stopSchedule").onclick = async () => {
+  try { await post("/api/schedule", {action:"stop"}); await loadSchedule(); toast("Schedule stopped; saved credentials cleared."); } catch (error) { toast(error.message); }
+};
+setInterval(async () => {
+  if (!state.health || state.refreshing || state.dragging || document.activeElement?.matches("input,textarea,select") || $$("dialog[open]").length) return;
+  state.refreshing = true;
+  try { await Promise.all([loadDiscoveries(), loadSchedule(), loadRemembered()]); } finally { state.refreshing = false; }
+}, 5000);
 
 async function loadHistory() {
   try { state.jobs = (await api("/api/scans")).sort((a,b) => b.created_at.localeCompare(a.created_at)); renderHistory(); if (!state.job && state.jobs.length) { state.job = state.jobs[0]; render(state.job); if (state.job.status === "running") { showRunning(state.job); state.timer = setInterval(poll, 900); } } } catch (_) {}

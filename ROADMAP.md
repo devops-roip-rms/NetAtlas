@@ -4,7 +4,7 @@
 
 1. **Credential profiles through Docker secrets** — multiple SSH and Windows credential sets, selected per site/VLAN, with secrets mounted at runtime instead of saved in inventory.
 2. **Agentless Windows WinRM from Linux** — NTLM/Kerberos support in the container for RDP-only servers, giving exact Windows edition, hostname, CPU, RAM, and disk even when SSH is disabled.
-3. **Scheduled scans and change detection** — compare each run with the previous one and highlight new hosts, disappeared hosts, service changes, OS upgrades, and resource drift.
+3. **Change detection and alerting** — interval scans and the new-host approval queue shipped in 1.2.8. Next, highlight service changes, OS upgrades and resource drift between observations.
 4. **Per-host rescan and correction** — retry one endpoint, override an incorrect OS classification, and preserve administrator notes without rescanning every VLAN.
 
 ## Inventory depth

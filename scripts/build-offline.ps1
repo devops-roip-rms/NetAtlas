@@ -1,5 +1,5 @@
 param(
-    [string]$Tag = "netatlas:1.2.7",
+    [string]$Tag = "netatlas:1.2.8",
     [ValidateSet("linux/amd64", "linux/arm64")]
     [string]$Platform = "linux/amd64"
 )
@@ -8,14 +8,14 @@ $ErrorActionPreference = "Stop"
 $appRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $distPath = Join-Path $appRoot "dist"
 $safePlatform = $Platform.Replace("/", "-")
-$archive = Join-Path $distPath "netatlas-1.2.7-$safePlatform.tar"
+$archive = Join-Path $distPath "netatlas-1.2.8-$safePlatform.tar"
 
 Set-Location -LiteralPath $appRoot
 docker info | Out-Null
 New-Item -ItemType Directory -Path $distPath -Force | Out-Null
 
 Write-Host "Building $Tag for $Platform..." -ForegroundColor Cyan
-docker build --platform $Platform --build-arg APP_VERSION=1.2.7 --tag $Tag .
+docker build --platform $Platform --build-arg APP_VERSION=1.2.8 --tag $Tag .
 if ($LASTEXITCODE -ne 0) { throw "Docker build failed." }
 
 Write-Host "Saving offline image..." -ForegroundColor Cyan
@@ -26,7 +26,8 @@ $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvar
 $checksumText = "$hash  $(Split-Path -Leaf $archive)`n"
 [System.IO.File]::WriteAllText("$archive.sha256", $checksumText, [System.Text.UTF8Encoding]::new($false))
 Copy-Item -LiteralPath (Join-Path $appRoot "scripts\load-and-run-airgap.ps1") -Destination $distPath -Force
-Copy-Item -LiteralPath (Join-Path $appRoot "scripts\load-and-run-airgap.sh") -Destination $distPath -Force
+$linuxLoader = [System.IO.File]::ReadAllText((Join-Path $appRoot "scripts\load-and-run-airgap.sh")).Replace("`r`n", "`n")
+[System.IO.File]::WriteAllText((Join-Path $distPath "load-and-run-airgap.sh"), $linuxLoader, [System.Text.UTF8Encoding]::new($false))
 Copy-Item -LiteralPath (Join-Path $appRoot "AIRGAP.md") -Destination $distPath -Force
 Copy-Item -LiteralPath (Join-Path $appRoot "ROADMAP.md") -Destination $distPath -Force
 Copy-Item -LiteralPath (Join-Path $appRoot "CHANGELOG.md") -Destination $distPath -Force
