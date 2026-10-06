@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.9
+
+- Added Show/Hide password controls to manual and background SSH profiles.
+- Direct targets now accept individual IPv4 addresses and CIDR scopes (/20–/32) under their own site without a VLAN, including direct-only scans and background scans.
+- Scan progress remains below 100% through OS/resource enrichment and inventory updates, reaching 100% only on completion.
+- Systems clear selection after successful drops, auto-scroll near screen edges while dragging, and offer a per-server Move to system dialog.
+- Recent scans includes labeled background scans. Overview counts, OS groups and site/VLAN groups open the matching remembered list.
+- Added persistent red flags for deletion candidates, a counted Red flags tab, and clear-flag actions. Flags do not delete hosts and survive rescans.
+- MobaXterm session names use roles, without SSH/RDP suffixes or intermediate OS folders. Duplicate names receive numeric suffixes to retain every session.
+- Added role to compatibility CSV exports; inventory CSV already includes it. Existing databases migrate automatically.
+
 ## 1.2.8
 
 - Rebuilt Overview entirely from Remembered Hosts, including last-checked reachability, service counts, OS totals, site resources and site/VLAN counts.

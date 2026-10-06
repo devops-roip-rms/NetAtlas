@@ -24,7 +24,7 @@ class NetAtlasTests(unittest.TestCase):
             ],
         })
         self.assertEqual([item["ip"] for item in plan], ["192.0.2.25", "198.51.100.9"])
-        self.assertEqual(plan[0], {"site": "Exceptions", "vlan": "Database", "cidr": "192.0.2.25/32", "ip": "192.0.2.25"})
+        self.assertEqual(plan[0], {"site": "Exceptions", "vlan": "", "cidr": "192.0.2.25/32", "ip": "192.0.2.25", "direct_target": True, "target_label": "Database"})
 
     def test_direct_only_mode_ignores_populated_vlan_lists(self):
         plan = backend.build_address_plan({
@@ -76,8 +76,8 @@ class NetAtlasTests(unittest.TestCase):
         job = backend.ScanJob(id="demo", config={}, results=[host], status="complete")
         text = backend.export_mobaxterm(job, "ops").decode("cp1252")
         self.assertIn("[Bookmarks_1]", text)
-        self.assertIn("SubRep=Linux\\HQ\\Servers", text)
-        self.assertIn("app01 - SSH=#109#0%192.0.2.10%22%ops", text)
+        self.assertIn("SubRep=HQ\\Servers", text)
+        self.assertIn("app01=#109#0%192.0.2.10%22%ops", text)
         self.assertNotIn("HTTPS", text)
         self.assertNotIn("#313#", text)
 
@@ -85,9 +85,9 @@ class NetAtlasTests(unittest.TestCase):
         host = {"site": "Branch", "vlan": "Servers", "ip": "192.0.2.20", "hostname": "win01", "services": ["RDP"], "open_ports": [3389], "web": [], "os_family": "Windows", "os_version": "Windows Server 2022"}
         job = backend.ScanJob(id="windows", config={}, results=[host], status="complete")
         text = backend.export_mobaxterm(job, "ops", "DOMAIN\\ops").decode("cp1252")
-        self.assertIn("SubRep=Windows\\Branch\\Servers", text)
-        self.assertIn("win01 - SSH=#109#0%192.0.2.20%22%ops", text)
-        self.assertIn("win01 - RDP=#91#4%192.0.2.20%3389%DOMAIN\\ops", text)
+        self.assertIn("SubRep=Branch\\Servers", text)
+        self.assertIn("win01=#109#0%192.0.2.20%22%ops", text)
+        self.assertIn("win01 (2)=#91#4%192.0.2.20%3389%DOMAIN\\ops", text)
 
     def test_windows_build_mapping(self):
         self.assertEqual(backend.windows_version_from_build("10.0.20348"), "Windows Server 2022 (build 10.0.20348)")
@@ -105,15 +105,15 @@ class NetAtlasTests(unittest.TestCase):
         windows = {"site": "HQ", "vlan": "Servers", "ip": "192.0.2.41", "hostname": "win01", "services": ["RDP"], "open_ports": [3389], "web": [], "os_family": "Windows", "os_version": "Windows Server 2022"}
         job = backend.ScanJob(id="profiles", config={}, results=[linux, windows], status="complete")
         text = backend.export_mobaxterm(job, "linuxops", "DOMAIN\\rdpops", "DOMAIN\\winops").decode("cp1252")
-        self.assertIn("rhel01 - SSH=#109#0%192.0.2.40%22%linuxops", text)
-        self.assertIn("win01 - SSH=#109#0%192.0.2.41%22%DOMAIN\\winops", text)
-        self.assertIn("win01 - RDP=#91#4%192.0.2.41%3389%DOMAIN\\rdpops", text)
+        self.assertIn("rhel01=#109#0%192.0.2.40%22%linuxops", text)
+        self.assertIn("win01=#109#0%192.0.2.41%22%DOMAIN\\winops", text)
+        self.assertIn("win01 (2)=#91#4%192.0.2.41%3389%DOMAIN\\rdpops", text)
 
     def test_export_falls_back_to_observed_host_ssh_username(self):
         host = {"site": "HQ", "vlan": "Linux", "ip": "192.0.2.42", "hostname": "rhel02", "services": ["SSH"], "open_ports": [22], "web": [], "os_family": "Linux", "os_version": "RHEL 9.6", "ssh_username": "observedops"}
         job = backend.ScanJob(id="observed-user", config={}, results=[host], status="complete")
         text = backend.export_mobaxterm(job).decode("cp1252")
-        self.assertIn("rhel02 - SSH=#109#0%192.0.2.42%22%observedops", text)
+        self.assertIn("rhel02=#109#0%192.0.2.42%22%observedops", text)
 
     def test_selected_only_exports(self):
         linux = {"site": "HQ", "vlan": "Linux", "cidr": "192.0.2.0/24", "ip": "192.0.2.60", "hostname": "rhel01", "hostname_source": "DNS", "role": "Application Server", "services": ["SSH"], "open_ports": [22], "web": [], "os_family": "Linux", "os_version": "RHEL 9.6", "os_confidence": 100, "os_evidence": "SSH", "resource_status": "Collected", "resources": {"cpu_cores": "4"}}
@@ -123,7 +123,7 @@ class NetAtlasTests(unittest.TestCase):
         self.assertEqual([host["hostname"] for host in selected], ["rhel01"])
         moba = backend.export_mobaxterm(job, "ops", hosts=selected).decode("cp1252")
         inventory = backend.export_inventory_csv(job, selected).decode("utf-8-sig")
-        self.assertIn("rhel01", moba)
+        self.assertIn("192.0.2.60", moba)
         self.assertNotIn("win01", moba)
         self.assertIn("rhel01", inventory)
         self.assertNotIn("win01", inventory)

@@ -12,7 +12,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-offline.ps1
 
 For an ARM64 Docker host, add `-Platform linux/arm64`.
 
-The script creates `dist/netatlas-1.2.8-linux-amd64.tar`, its SHA-256 checksum, and the offline loader scripts. Copy the entire `dist` folder to approved removable media.
+The script creates `dist/netatlas-1.2.9-linux-amd64.tar`, its SHA-256 checksum, and the offline loader scripts. Copy the entire `dist` folder to approved removable media.
 
 ## 2. Load and run inside the air gap
 
@@ -20,7 +20,7 @@ Windows Docker host:
 
 ```powershell
 New-Item -ItemType Directory -Force .\netatlas-data
-.\load-and-run-airgap.ps1 -Archive .\netatlas-1.2.8-linux-amd64.tar -DataPath .\netatlas-data
+.\load-and-run-airgap.ps1 -Archive .\netatlas-1.2.9-linux-amd64.tar -DataPath .\netatlas-data
 ```
 
 Linux Docker host—first create the persistent local database folder:
@@ -40,7 +40,7 @@ sudo chcon -Rt container_file_t ./netatlas-data
 Then load and run NetAtlas:
 
 ```sh
-sh ./load-and-run-airgap.sh ./netatlas-1.2.8-linux-amd64.tar 8765 ./netatlas-data 0.0.0.0
+sh ./load-and-run-airgap.sh ./netatlas-1.2.9-linux-amd64.tar 8765 ./netatlas-data 0.0.0.0
 ```
 
 The Linux loader accepts checksum files copied from either Windows or Linux and verifies the hash independently of line-ending format. It also normalizes the local folder ownership to the container user (UID/GID 10001) and applies Docker's private SELinux label during the mount.
@@ -78,7 +78,9 @@ The container must have routes to both sites and all VLANs. Docker Desktop norma
 
 Deep Nmap OS detection is off by default. Enable it only when the extra fingerprint detail is needed; it uses at most two workers and requires `NET_RAW` and `NET_ADMIN`. The loader grants only those capabilities. The application itself runs as a non-root user with a read-only container filesystem.
 
-HTTP and HTTPS remain visible in inventory but are not exported as MobaXterm sessions. Filter or sort any column, select the required hosts, and export only that selection. Current-scan exports group by OS/site/VLAN. Remembered and Systems exports follow your system order, with Windows and Linux folders inside each system. Windows receives both SSH and RDP; Linux receives SSH only.
+HTTP and HTTPS remain visible in inventory but are not exported as MobaXterm sessions. Filter or sort any column, select the required hosts, and export only that selection. Current-scan exports group by site/VLAN; direct scopes have no VLAN. Remembered and Systems exports follow your system order with sessions directly inside each system, without Windows/Linux subfolders. MobaXterm session names use roles without protocol suffixes; duplicate names receive numeric suffixes so both Windows SSH and RDP entries remain importable. Linux receives SSH only. Compatibility CSV now includes role.
+
+Version 1.2.9 migrates the existing database automatically. Keep and back up your existing `netatlas-data` folder when upgrading; do not replace it with an empty folder. Direct targets accept CIDR scopes (/20–/32) with a new site and no VLAN. Red flags, system membership, manual roles and site overrides persist across rescans. Red flags only mark deletion candidates; removal still requires confirmation.
 
 For a small ad-hoc scan, enter the individual IPs under **Direct server targets** and enable **Direct servers only**. The populated Site A and Site B VLAN lists are ignored for that run.
 

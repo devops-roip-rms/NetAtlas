@@ -44,7 +44,7 @@ WEB_DIR = APP_DIR / "web"
 DATA_DIR = Path(os.environ.get("NETATLAS_DATA_DIR", APP_DIR / "data")).resolve()
 DATA_DIR.mkdir(exist_ok=True)
 HOSTS_DB = DATA_DIR / "hosts.db"
-APP_VERSION = "1.2.8"
+APP_VERSION = "1.2.9"
 SENSITIVE_CONFIG_KEYS = {"ssh_password", "linux_ssh_password", "windows_ssh_password", "password"}
 
 PRIMARY_PORTS = {22: "SSH", 80: "HTTP", 443: "HTTPS", 3389: "RDP"}
@@ -126,7 +126,8 @@ class ScanJob:
     def public(self) -> dict:
         payload = asdict(self)
         payload["config"] = {key: value for key, value in payload.get("config", {}).items() if key not in SENSITIVE_CONFIG_KEYS}
-        payload["progress"] = round((self.completed / self.total * 100), 1) if self.total else 0
+        checked = round((self.completed / self.total * 100), 1) if self.total else 0
+        payload["progress"] = 100 if self.status == "complete" and self.finished_at else min(checked, 99)
         payload["summary"] = summarize(self.results)
         payload["breakdown"] = inventory_breakdown(self.results)
         payload.pop("cancelled", None)
@@ -156,7 +157,7 @@ def inventory_breakdown(results: list[dict]) -> dict:
     vlans: dict[tuple[str, str], int] = {}
     for host in results:
         site = clean_text(host.get("site"), 60) or "Unassigned"
-        vlan = clean_text(host.get("vlan"), 60) or "Unassigned"
+        vlan = clean_text(host.get("vlan"), 60) or "No VLAN"
         os_name = clean_text(host.get("os_version") or host.get("os_family"), 180) or "Unknown"
         operating_systems[os_name] = operating_systems.get(os_name, 0) + 1
         vlans[(site, vlan)] = vlans.get((site, vlan), 0) + 1
@@ -220,22 +221,26 @@ def build_address_plan(config: dict) -> list[dict]:
     for index, target in enumerate(direct_targets):
         if not isinstance(target, dict):
             raise ValueError("Each direct target must contain an IPv4 address")
-        raw_ip = clean_text(target.get("ip"), 64)
+        raw_ip = clean_text(target.get("ip") or target.get("cidr"), 64)
         try:
-            address = ipaddress.ip_address(raw_ip)
+            network = ipaddress.ip_network(raw_ip, strict=False)
         except ValueError as exc:
-            raise ValueError(f"Invalid direct target IPv4 address: {raw_ip or 'empty line'}") from exc
-        if address.version != 4:
+            raise ValueError(f"Invalid direct target IPv4 address or scope: {raw_ip or 'empty line'}") from exc
+        if network.version != 4:
             raise ValueError(f"IPv6 is not supported yet: {raw_ip}")
-        text_address = str(address)
-        key = (direct_group, text_address)
-        if key in seen:
-            continue
-        seen.add(key)
-        target_name = clean_text(target.get("name"), 60) or f"Direct server {index + 1}"
-        plan.append({"site": direct_group, "vlan": target_name, "cidr": f"{text_address}/32", "ip": text_address})
-        if len(plan) > max_addresses:
-            raise ValueError(f"Address plan exceeds the safety limit of {max_addresses:,} addresses")
+        if network.num_addresses > 4096:
+            raise ValueError(f"{raw_ip} is too large; use networks /20 or smaller")
+        target_name = clean_text(target.get("name"), 60)
+        for address in network.hosts():
+            text_address = str(address)
+            key = (direct_group, text_address)
+            if key in seen:
+                continue
+            seen.add(key)
+            plan.append({"site": direct_group, "vlan": "", "cidr": str(network), "ip": text_address,
+                         "direct_target": True, "target_label": target_name})
+            if len(plan) > max_addresses:
+                raise ValueError(f"Address plan exceeds the safety limit of {max_addresses:,} addresses")
     if not plan:
         raise ValueError("Add at least one valid IPv4 subnet or direct server target")
     return plan
@@ -707,6 +712,10 @@ def init_hosts_db() -> None:
             "reachable": "INTEGER",
             "last_checked": "TEXT NOT NULL DEFAULT ''",
             "added_at": "TEXT NOT NULL DEFAULT ''",
+            "direct_target": "INTEGER NOT NULL DEFAULT 0",
+            "target_label": "TEXT NOT NULL DEFAULT ''",
+            "deletion_candidate": "INTEGER NOT NULL DEFAULT 0",
+            "flagged_at": "TEXT NOT NULL DEFAULT ''",
         }
         for column, declaration in migrations.items():
             if column not in existing_columns:
@@ -714,6 +723,7 @@ def init_hosts_db() -> None:
         connection.execute("CREATE INDEX IF NOT EXISTS remembered_hosts_hostname ON remembered_hosts(hostname)")
         connection.execute("CREATE INDEX IF NOT EXISTS remembered_hosts_last_seen ON remembered_hosts(last_seen DESC)")
         connection.execute("UPDATE remembered_hosts SET added_at=first_seen WHERE added_at=''")
+        connection.execute("UPDATE remembered_hosts SET direct_target=1 WHERE cidr LIKE '%/32'")
         connection.executescript("""
             CREATE TABLE IF NOT EXISTS systems (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, position INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS discoveries (site TEXT NOT NULL, ip TEXT NOT NULL, host_json TEXT NOT NULL,
@@ -739,9 +749,9 @@ def remember_job_hosts(job: ScanJob) -> int:
             role = clean_text(host.get("role") or infer_host_role(host), 80)
             site = clean_text(host.get("site"), 60)
             cidr = clean_text(host.get("cidr"), 64)
-            if cidr.endswith("/32"):
+            if host.get("direct_target") or cidr.endswith("/32"):
                 locked = connection.execute(
-                    "SELECT site FROM remembered_hosts WHERE ip=? AND site_locked=1 AND cidr LIKE '%/32' ORDER BY last_seen DESC LIMIT 1",
+                    "SELECT site FROM remembered_hosts WHERE ip=? AND site_locked=1 AND direct_target=1 ORDER BY last_seen DESC LIMIT 1",
                     (clean_text(host.get("ip"), 64),),
                 ).fetchone()
                 if locked:
@@ -752,13 +762,15 @@ def remember_job_hosts(job: ScanJob) -> int:
                     site, ip, hostname, role, vlan, cidr, services_json, open_ports_json,
                     web_json, os_family, os_version, os_confidence, os_evidence,
                     resources_json, resource_status, ssh_username, ssh_auth_status,
-                    ssh_auth_method, ssh_auth_error, first_seen, last_seen, last_scan_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ssh_auth_method, ssh_auth_error, first_seen, last_seen, last_scan_id, direct_target, target_label
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(site, ip) DO UPDATE SET
                     hostname=excluded.hostname,
                     role=CASE WHEN remembered_hosts.role_locked=1 THEN remembered_hosts.role ELSE excluded.role END,
                     vlan=excluded.vlan,
                     cidr=excluded.cidr,
+                    direct_target=excluded.direct_target,
+                    target_label=excluded.target_label,
                     services_json=excluded.services_json,
                     open_ports_json=excluded.open_ports_json,
                     web_json=excluded.web_json,
@@ -787,6 +799,7 @@ def remember_job_hosts(job: ScanJob) -> int:
                     clean_text(host.get("resource_status"), 240), clean_text(host.get("ssh_username"), 100),
                     clean_text(host.get("ssh_auth_status"), 160), clean_text(host.get("ssh_auth_method"), 80),
                     clean_text(host.get("ssh_auth_error"), 300), observed, observed, job.id,
+                    int(bool(host.get("direct_target") or cidr.endswith("/32"))), clean_text(host.get("target_label"), 60),
                 ),
             )
             connection.execute("UPDATE remembered_hosts SET reachable=1, last_checked=?, added_at=CASE WHEN added_at='' THEN ? ELSE added_at END WHERE site=? AND ip=?", (observed, utc_now(), site, clean_text(host.get("ip"), 64)))
@@ -821,6 +834,8 @@ def list_remembered_hosts() -> list[dict]:
         host["resources"] = decode_json_field(host.pop("resources_json"), {})
         host["role_locked"] = bool(host.get("role_locked"))
         host["site_locked"] = bool(host.get("site_locked"))
+        host["direct_target"] = bool(host.get("direct_target"))
+        host["deletion_candidate"] = bool(host.get("deletion_candidate"))
         normalize_host_record(host)
         hosts.append(host)
     system_map = {system["id"]: system for system in list_systems()}
@@ -863,10 +878,10 @@ def update_remembered_site(site: object, ip: object, new_site: object) -> dict:
     init_hosts_db()
     connection = hosts_db_connection()
     try:
-        row = connection.execute("SELECT cidr FROM remembered_hosts WHERE site=? AND ip=?", (old_site, address)).fetchone()
+        row = connection.execute("SELECT cidr, direct_target FROM remembered_hosts WHERE site=? AND ip=?", (old_site, address)).fetchone()
         if not row:
             raise ValueError("Remembered host was not found")
-        if not clean_text(row["cidr"], 64).endswith("/32"):
+        if not row["direct_target"] and not clean_text(row["cidr"], 64).endswith("/32"):
             raise ValueError("Only direct server targets can be moved to another site")
         try:
             connection.execute(
@@ -879,6 +894,19 @@ def update_remembered_site(site: object, ip: object, new_site: object) -> dict:
     finally:
         connection.close()
     return {"old_site": old_site, "site": site_name, "ip": address, "site_locked": True}
+
+
+def flag_remembered_host(payload: dict) -> dict:
+    site, ip = clean_text(payload.get("site"), 60), clean_text(payload.get("ip"), 64)
+    if not site or not ip or not isinstance(payload.get("flagged"), bool):
+        raise ValueError("Site, IP and a boolean flagged value are required")
+    flagged = payload["flagged"]
+    init_hosts_db()
+    with closing(hosts_db_connection()) as connection, connection:
+        if connection.execute("UPDATE remembered_hosts SET deletion_candidate=?, flagged_at=? WHERE site=? AND ip=?",
+                              (int(flagged), utc_now() if flagged else "", site, ip)).rowcount != 1:
+            raise ValueError("Remembered host was not found")
+    return {"ok": True}
 
 
 def delete_remembered_host(site: object, ip: object) -> dict:
@@ -968,8 +996,8 @@ def remembered_overview() -> dict:
 
 
 def inventory_key(host: dict, known: list[dict]) -> tuple[str, str]:
-    if str(host.get("cidr", "")).endswith("/32"):
-        locked = next((row for row in known if row["ip"] == host["ip"] and row.get("site_locked") and row["cidr"].endswith("/32")), None)
+    if host.get("direct_target") or str(host.get("cidr", "")).endswith("/32"):
+        locked = next((row for row in known if row["ip"] == host["ip"] and row.get("site_locked") and row.get("direct_target")), None)
         if locked:
             return locked["site"], host["ip"]
     return host["site"], host["ip"]
@@ -1303,11 +1331,10 @@ def selected_hosts_from_list(source: list[dict], selection: object, source_name:
 
 
 def session_folder(host: dict) -> str:
-    family = host.get("os_family")
-    block = family if family in {"Windows", "Linux"} else "Unclassified"
     if "system_id" in host:
-        return f"{safe_name(host.get('system_name') or 'Unassigned')}\\{block}"
-    return f"{block}\\{safe_name(host['site'])}\\{safe_name(host['vlan'])}"
+        return safe_name(host.get("system_name") or "Unassigned")
+    folder = safe_name(host["site"])
+    return f"{folder}\\{safe_name(host['vlan'])}" if host.get("vlan") else folder
 
 
 def ordered_export_hosts(hosts: list[dict]) -> list[dict]:
@@ -1319,30 +1346,32 @@ def export_mobaxterm(job: ScanJob, linux_ssh_user: str = "", rdp_user: str = "",
     sections: dict[str, list[tuple[str, str]]] = {}
     for host in ordered_export_hosts(job.results if hosts is None else hosts):
         family = host.get("os_family")
-        block = family if family in {"Windows", "Linux"} else "Unclassified"
         folder = session_folder(host)
         sessions: list[tuple[str, str]] = []
-        base = safe_name(host.get("hostname") or host["ip"])
+        base = safe_name(host.get("role") or host.get("hostname") or host["ip"])
         observed_ssh_user = clean_text(host.get("ssh_username"), 100)
         if family == "Windows":
-            sessions.append((f"{base} - SSH", ssh_session(host, windows_ssh_user or observed_ssh_user or linux_ssh_user)))
-            sessions.append((f"{base} - RDP", rdp_session(host, rdp_user)))
+            sessions.append((base, ssh_session(host, windows_ssh_user or observed_ssh_user or linux_ssh_user)))
+            sessions.append((base, rdp_session(host, rdp_user)))
         elif family == "Linux":
-            sessions.append((f"{base} - SSH", ssh_session(host, linux_ssh_user or observed_ssh_user)))
+            sessions.append((base, ssh_session(host, linux_ssh_user or observed_ssh_user)))
         else:
             if "SSH" in host["services"]:
-                sessions.append((f"{base} - SSH", ssh_session(host, observed_ssh_user or linux_ssh_user or windows_ssh_user)))
+                sessions.append((base, ssh_session(host, observed_ssh_user or linux_ssh_user or windows_ssh_user)))
             if "RDP" in host["services"]:
-                sessions.append((f"{base} - RDP", rdp_session(host, rdp_user)))
+                sessions.append((base, rdp_session(host, rdp_user)))
         if sessions:
             sections.setdefault(folder, []).extend(sessions)
     lines = ["[Bookmarks]", "SubRep=NetAtlas", "ImgNum=41", ""]
     for index, folder in enumerate(sections, 1):
         lines += [f"[Bookmarks_{index}]", f"SubRep={folder}", "ImgNum=41"]
-        used: dict[str, int] = {}
+        used: set[str] = set()
         for name, value in sections[folder]:
-            used[name] = used.get(name, 0) + 1
-            unique = name if used[name] == 1 else f"{name} ({used[name]})"
+            unique, duplicate = name, 1
+            while unique.casefold() in used:
+                duplicate += 1
+                unique = f"{name} ({duplicate})"
+            used.add(unique.casefold())
             lines.append(f"{unique}={value}")
         lines.append("")
     return "\r\n".join(lines).encode("cp1252", "replace")
@@ -1351,23 +1380,23 @@ def export_mobaxterm(job: ScanJob, linux_ssh_user: str = "", rdp_user: str = "",
 def export_csv(job: ScanJob, linux_ssh_user: str = "", rdp_user: str = "", windows_ssh_user: str = "", hosts: list[dict] | None = None) -> bytes:
     buffer = io.StringIO(newline="")
     writer = csv.writer(buffer)
-    writer.writerow(["name", "protocol", "host", "port", "username", "folder", "url"])
+    writer.writerow(["name", "protocol", "host", "port", "username", "folder", "url", "role"])
     for host in ordered_export_hosts(job.results if hosts is None else hosts):
         family = host.get("os_family")
-        block = family if family in {"Windows", "Linux"} else "Unclassified"
         folder = f"NetAtlas\\{session_folder(host)}"
         name = host.get("hostname") or host["ip"]
+        role = host.get("role") or infer_host_role(host)
         observed_ssh_user = clean_text(host.get("ssh_username"), 100)
         if family == "Windows":
-            writer.writerow([f"{name} - SSH", "SSH", host["ip"], 22, windows_ssh_user or observed_ssh_user or linux_ssh_user, folder, ""])
-            writer.writerow([f"{name} - RDP", "RDP", host["ip"], 3389, rdp_user, folder, ""])
+            writer.writerow([f"{name} - SSH", "SSH", host["ip"], 22, windows_ssh_user or observed_ssh_user or linux_ssh_user, folder, "", role])
+            writer.writerow([f"{name} - RDP", "RDP", host["ip"], 3389, rdp_user, folder, "", role])
         elif family == "Linux":
-            writer.writerow([f"{name} - SSH", "SSH", host["ip"], 22, linux_ssh_user or observed_ssh_user, folder, ""])
+            writer.writerow([f"{name} - SSH", "SSH", host["ip"], 22, linux_ssh_user or observed_ssh_user, folder, "", role])
         else:
             if "SSH" in host["services"]:
-                writer.writerow([f"{name} - SSH", "SSH", host["ip"], 22, observed_ssh_user or linux_ssh_user or windows_ssh_user, folder, ""])
+                writer.writerow([f"{name} - SSH", "SSH", host["ip"], 22, observed_ssh_user or linux_ssh_user or windows_ssh_user, folder, "", role])
             if "RDP" in host["services"]:
-                writer.writerow([f"{name} - RDP", "RDP", host["ip"], 3389, rdp_user, folder, ""])
+                writer.writerow([f"{name} - RDP", "RDP", host["ip"], 3389, rdp_user, folder, "", role])
     return buffer.getvalue().encode("utf-8-sig")
 
 
@@ -1440,6 +1469,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         try:
             path = urlparse(self.path).path
+            if path == "/api/remembered-hosts/flag":
+                self.send_json(flag_remembered_host(self.json_body()))
+                return
             if path == "/api/systems":
                 self.send_json(edit_system(self.json_body()))
                 return

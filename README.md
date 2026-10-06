@@ -44,13 +44,13 @@ Docker deployments listen on all node interfaces by default. Restrict TCP/8765 t
 - Services are independent: a Windows server listening on both SSH and RDP is listed with both protocols and receives both MobaXterm sessions.
 - The default role is the resolved hostname. Role names can be edited in **Remembered Hosts** and manual values survive later scans.
 - Only resolved hostnames are added to **Remembered Hosts**. Manual scans update the existing site/IP record and add newly resolved hosts. Background scans update existing records and send new hosts to the review queue.
-- The **Direct server targets** field accepts individual IPv4 addresses with an optional label. Enable **Direct servers only** to run those IPs without either VLAN list, or leave it off to combine direct targets with the VLAN scan. A direct server's site can be changed in **Remembered Hosts**, and that manual site survives later scans.
+- The **Direct server targets / scopes** field accepts individual IPv4 addresses or CIDR scopes (/20–/32) with an optional label, one per line (for example `Application network, 192.0.2.0/24`). Set the direct target site to scan a new site without assigning any VLAN. Enable **Direct servers only** to run these targets without either VLAN list, or leave it off to combine them. A direct server's site can be changed in **Remembered Hosts**, and that manual site survives later scans. Background scans support the same scopes.
 - The internal DNS suffix `.tng.topsecret` is removed from displayed, remembered, CSV, and MobaXterm hostnames.
 - Scanning uses only the networks you enter. Only scan networks you own or are authorized to assess.
 
 ## MobaXterm export
 
-From **Hosts**, **Remembered Hosts**, or **Systems**, select the required hosts and choose **Export selected**. Remembered exports use folders such as `RMS-Site-A\Windows` and `RMS-Site-A\Linux`; hosts without a system use `Unassigned`. System and server order are saved and used in MobaXterm and compatibility CSV exports. Current-scan exports keep the OS/site/VLAN hierarchy. Windows receives SSH and RDP entries; Linux receives SSH only. HTTP and HTTPS remain inventory-only. Passwords are never exported. In MobaXterm, right-click **User sessions** and choose **Import sessions from file**.
+From **Hosts**, **Remembered Hosts**, or **Systems**, select the required hosts and choose **Export selected**. Remembered exports place sessions directly under systems such as `RMS-Site-A`; hosts without a system use `Unassigned`. System and server order are saved and used in MobaXterm and compatibility CSV exports. Current-scan exports use site/VLAN folders, or just the site for direct scopes. There are no intermediate OS folders. Windows receives SSH and RDP entries; Linux receives SSH only. MobaXterm names use the role (hostname fallback), without protocol suffixes. Duplicate names, including a Windows server's second session, receive `(2)`, `(3)`, etc. to avoid overwriting INI keys. The session icon identifies its protocol. Compatibility CSV includes a separate `role` column; inventory CSV also includes role. HTTP and HTTPS remain inventory-only. Passwords are never exported. In MobaXterm, right-click **User sessions** and choose **Import sessions from file**.
 
 ## Remembered Overview and Systems
 
@@ -58,9 +58,15 @@ Overview reads only the durable inventory, independently of the selected scan. I
 
 Create a system in **Systems**, select servers and drag them together into its card. Drop above a server to insert there; dropping into empty card space appends. Use the arrows to order servers and systems, or **Move selected** as an alternative to dragging. Rename a system without losing membership. Deleting a system moves its servers to Unassigned without deleting them. Roles, site overrides, membership and ordering survive rescans.
 
+Selection clears after a successful drop or manual move. Hold a dragged server near the top or bottom of the viewport to scroll. Each server also has a **Move…** action with a destination-system dialog, available from remembered host details as well. Click Overview metrics, OS groups, or site/VLAN groups to open the corresponding filtered remembered list; **Show all remembered hosts** clears that group filter.
+
+Use the red flag beside a remembered host or in its details to mark it as a deletion candidate. The **Red flags** tab lists these hosts and shows the total in its badge. Flags persist across scans and can be cleared; marking a host does not delete it. Actual removal still requires confirmation.
+
 ## Background scans and review
 
 In **Background scans**, enter an interval (1–10080 minutes), the two site names and VLAN lists, and optional separate Linux/Windows SSH credentials. **Copy current scan setup** copies the manual VLAN and SSH profile inputs. Save to start the first run as soon as the scanner is free. Subsequent runs begin one interval after the previous run finishes. Manual and scheduled scans never overlap. Scheduling continues with the browser closed while NetAtlas runs, and resumes when the container restarts.
+
+SSH profiles have **Show/Hide** password controls. Recent scans includes both manual and background runs with explicit labels. Progress stays at most 99% while enrichment and inventory updates are running, and reaches 100% only when the scan completes.
 
 Background scans refresh remembered hosts but place newly resolved site/IP records in **New hosts**. The tab count shows how many await review. Select records to add them to Remembered, or dismiss them so later background sightings stay hidden. Repeated discoveries update one record. Manual scans retain their automatic-add behavior. Unresolved new hostnames do not enter the queue.
 

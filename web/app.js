@@ -6,6 +6,19 @@ const state = {
   rememberedTable: {sortKey: "last_seen", sortDir: "desc", filters: {}}
 };
 Object.assign(state, {systems: [], systemSelected: new Set(), discoveries: [], discoverySelected: new Set(), schedule: null});
+state.inventoryGroup = null;
+$$('input[type="password"]').forEach(input => {
+  const wrapper = document.createElement("div"); wrapper.className = "password-control";
+  input.replaceWith(wrapper); wrapper.append(input);
+  const button = document.createElement("button"); button.type = "button"; button.className = "password-toggle";
+  button.textContent = "Show"; button.setAttribute("aria-controls", input.id); button.setAttribute("aria-pressed", "false");
+  button.setAttribute("aria-label", "Show password");
+  button.onclick = () => {
+    const show = input.type === "password"; input.type = show ? "text" : "password";
+    button.textContent = show ? "Hide" : "Show"; button.setAttribute("aria-pressed", String(show)); button.setAttribute("aria-label", show ? "Hide password" : "Show password");
+  };
+  wrapper.append(button);
+});
 // Keep scan progress with scan results; Overview only displays remembered inventory.
 $("#resultsView").prepend($(".scan-hero"));
 const savedTheme = localStorage.getItem("netatlas-theme");
@@ -28,9 +41,9 @@ function toast(message) {
 function go(view) {
   $$(".view").forEach(x => x.classList.toggle("active", x.id === `${view}View`));
   $$(".nav-item").forEach(x => x.classList.toggle("active", x.dataset.view === view));
-  const labels = {overview:"Your remembered estate.", results:"Your discovered estate.", remembered:"Your durable host inventory.", systems:"Your ordered session library.", discoveries:"Review new discoveries.", background:"Your automatic scan schedule.", configuration:"Define the scan boundary."};
+  const labels = {overview:"Your remembered estate.", results:"Your discovered estate.", remembered:"Your durable host inventory.", candidates:"Your deletion candidates.", systems:"Your ordered session library.", discoveries:"Review new discoveries.", background:"Your automatic scan schedule.", configuration:"Define the scan boundary."};
   $("#pageTitle").textContent = labels[view];
-  if (["remembered", "overview", "systems"].includes(view)) loadRemembered();
+  if (["remembered", "overview", "systems", "candidates"].includes(view)) loadRemembered();
   if (view === "discoveries") loadDiscoveries();
   if (view === "background") loadSchedule();
 }
@@ -56,8 +69,8 @@ function parseVlans(text) {
 function parseDirectTargets(text) {
   return text.split(/\r?\n/).map(x => x.trim()).filter(Boolean).map((line, index) => {
     const comma = line.lastIndexOf(",");
-    if (comma > -1) return {name: line.slice(0, comma).trim() || `Direct server ${index + 1}`, ip: line.slice(comma + 1).trim()};
-    return {name: `Direct server ${index + 1}`, ip: line};
+    if (comma > -1) return {name: line.slice(0, comma).trim(), ip: line.slice(comma + 1).trim()};
+    return {name: "", ip: line};
   });
 }
 
@@ -73,12 +86,15 @@ function estimate() {
       vlans++;
     }));
   }
-  const direct = parseDirectTargets($("#directTargets").value).length;
+  const direct = parseDirectTargets($("#directTargets").value).reduce((count, target) => {
+    const bits = Number(target.ip.split("/")[1] ?? 32);
+    return count + (bits >= 20 && bits <= 30 ? 2 ** (32-bits)-2 : bits === 31 ? 2 : bits === 32 ? 1 : 0);
+  }, 0);
   count += direct;
   $("#scopeEstimate").textContent = `${count.toLocaleString()} ${count === 1 ? "address" : "addresses"}`;
-  $("#addressEstimate").textContent = directOnly ? `${direct} direct ${direct === 1 ? "server" : "servers"}` : `${vlans} ${vlans === 1 ? "VLAN" : "VLANs"}${direct ? ` + ${direct} direct` : ""} · up to ${count.toLocaleString()} ${count === 1 ? "host" : "hosts"}`;
-  $$(".config-card").forEach(card => card.classList.toggle("scope-disabled", directOnly));
-  $$(".config-card input, .config-card textarea").forEach(control => control.disabled = directOnly);
+  $("#addressEstimate").textContent = directOnly ? `${direct.toLocaleString()} direct addresses` : `${vlans} ${vlans === 1 ? "VLAN" : "VLANs"}${direct ? ` + ${direct.toLocaleString()} direct addresses` : ""} · up to ${count.toLocaleString()} ${count === 1 ? "host" : "hosts"}`;
+  $$("#scanForm .config-card").forEach(card => card.classList.toggle("scope-disabled", directOnly));
+  $$("#scanForm .config-card input, #scanForm .config-card textarea").forEach(control => control.disabled = directOnly);
   $("#startScanButton").firstChild.textContent = directOnly ? "Scan direct servers " : "Start discovery ";
 }
 [$("#siteAVlans"), $("#siteBVlans"), $("#directTargets")].forEach(x => x.addEventListener("input", estimate));
@@ -172,7 +188,7 @@ function finishHero(job) {
 function render(job) {
   const s = job.summary || {}; const p = job.progress || 0;
   if (state.selectionJobId !== job.id) { state.selected.clear(); state.selectionJobId = job.id; }
-  $("#progressPercent").textContent = `${Math.round(p)}%`; $("#progressBar").style.width = `${p}%`; $("#progressPhase").textContent = job.current_phase;
+  $("#progressPercent").textContent = `${job.status === "complete" && job.finished_at ? 100 : Math.min(99, Math.round(p))}%`; $("#progressBar").style.width = `${p}%`; $("#progressPhase").textContent = job.current_phase;
   $("#progressChecked").textContent = (job.completed || 0).toLocaleString(); $("#progressFound").textContent = (s.hosts || 0).toLocaleString();
   $("#navHostCount").textContent = s.hosts || 0;
   const validKeys = new Set((job.results || []).map(hostKey));
@@ -206,12 +222,37 @@ function renderBreakdowns(breakdown) {
   $("#siteResources").classList.toggle("empty-breakdown", !sites.length);
   $("#siteResources").innerHTML = sites.length ? sites.map(site => {
     const capacity = site.resource_hosts ? `${Number(site.cpu_cores || 0).toLocaleString()} cores · ${Number(site.ram_gb || 0).toLocaleString()} GB RAM · ${Number(site.disk_gb || 0).toLocaleString()} GB disk` : "No authenticated resource data";
-    return `<div class="breakdown-row"><div><strong>${esc(site.site)}</strong><small>${esc(capacity)} · ${site.resource_hosts || 0}/${site.servers} servers measured</small></div><b>${site.servers}</b></div>`;
+    return `<button type="button" class="breakdown-row group-button" data-site-group="${esc(site.site)}"><div><strong>${esc(site.site)}</strong><small>${esc(capacity)} · ${site.resource_hosts || 0}/${site.servers} servers measured</small></div><b>${site.servers}</b></button>`;
   }).join("") : "No collected resources yet.";
   $("#osCounts").classList.toggle("empty-breakdown", !operatingSystems.length);
-  $("#osCounts").innerHTML = operatingSystems.length ? operatingSystems.map(os => `<div class="breakdown-row"><div><strong>${esc(os.name)}</strong><small>Detected operating system</small></div><b>${os.servers}</b></div>`).join("") : "No operating systems yet.";
+  $("#osCounts").innerHTML = operatingSystems.length ? operatingSystems.map(os => `<button type="button" class="breakdown-row group-button" data-os-group="${esc(os.name)}"><div><strong>${esc(os.name)}</strong><small>Open matching Remembered Hosts →</small></div><b>${os.servers}</b></button>`).join("") : "No operating systems yet.";
   $("#vlanCounts").classList.toggle("empty-breakdown", !vlans.length);
-  $("#vlanCounts").innerHTML = vlans.length ? vlans.map(item => `<div class="breakdown-row"><div><strong>${esc(item.site)} · ${esc(item.vlan)}</strong><small>Site-specific VLAN</small></div><b>${item.servers}</b></div>`).join("") : "No VLAN inventory yet.";
+  $("#vlanCounts").innerHTML = vlans.length ? vlans.map(item => `<button type="button" class="breakdown-row group-button" data-vlan-group="${esc(item.vlan)}" data-group-site="${esc(item.site)}"><div><strong>${esc(item.site)} · ${esc(item.vlan)}</strong><small>Open this site's servers →</small></div><b>${item.servers}</b></button>`).join("") : "No VLAN inventory yet.";
+  $$('[data-os-group]').forEach(button => button.onclick = () => openInventoryGroup({type:"os", value:button.dataset.osGroup, label:button.dataset.osGroup}));
+  $$('[data-site-group]').forEach(button => button.onclick = () => openInventoryGroup({type:"site", value:button.dataset.siteGroup, label:button.dataset.siteGroup}));
+  $$('[data-vlan-group]').forEach(button => button.onclick = () => openInventoryGroup({type:"vlan", value:button.dataset.vlanGroup, site:button.dataset.groupSite, label:`${button.dataset.groupSite} · ${button.dataset.vlanGroup}`}));
+}
+function groupMatches(host) {
+  const group = state.inventoryGroup;
+  if (!group) return true;
+  if (group.type === "os") return (host.os_version || host.os_family || "Unknown") === group.value;
+  if (group.type === "family") return group.value === "other" ? !["Windows", "Linux"].includes(host.os_family) : host.os_family === group.value;
+  if (group.type === "site") return host.site === group.value;
+  if (group.type === "vlan") return host.site === group.site && (host.vlan || "No VLAN") === group.value;
+  if (group.type === "status") return group.value === "reachable" ? host.reachable === 1 : host.reachable === 0;
+  if (group.type === "service") return host.reachable === 1 && (group.value === "Web" ? host.services.some(service => ["HTTP", "HTTPS"].includes(service)) : host.services.includes(group.value));
+  return true;
+}
+function openInventoryGroup(group) {
+  state.inventoryGroup = group; state.rememberedTable.filters = {}; $("#rememberedSearch").value = "";
+  $$('[data-remembered-filter]').forEach(input => input.value = "");
+  state.rememberedSelected.clear(); go("remembered"); renderRemembered();
+}
+$("#clearInventoryGroup").onclick = () => { state.inventoryGroup = null; renderRemembered(); };
+$$('[data-os-family]').forEach(button => button.onclick = () => openInventoryGroup({type:"family", value:button.dataset.osFamily, label:button.dataset.osFamily === "other" ? "Unknown / other OS" : button.dataset.osFamily}));
+for (const [id, group] of [["metricRemembered", null], ["metricHosts", {type:"status", value:"reachable", label:"Reachable hosts"}], ["metricOffline", {type:"status", value:"offline", label:"Unreachable hosts"}], ...["SSH", "RDP", "Web"].map(value => [value === "SSH" ? "metricSsh" : value === "RDP" ? "metricRdp" : "metricWeb", {type:"service",value,label:value}])]) {
+  const card = $("#" + id).closest("article"); card.classList.add("clickable-metric"); card.tabIndex = 0; card.setAttribute("role", "button");
+  card.onclick = () => openInventoryGroup(group); card.onkeydown = event => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); openInventoryGroup(group); } };
 }
 const serviceChip = x => `<span class="chip ${x}">${esc(x)}</span>`;
 const esc = x => String(x ?? "").replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
@@ -321,10 +362,12 @@ function showHost(host, remembered = false) {
   const resources = Object.entries(host.resources || {}).map(([key, value]) => `<div class="detail-stat"><small>${esc(key.replaceAll("_", " "))}</small><strong>${esc(value)}</strong></div>`).join("");
   const memory = remembered ? `<div class="detail-stat"><small>Added to Remembered</small><strong>${esc(new Date(host.added_at || host.first_seen).toLocaleString())}</strong></div><div class="detail-stat"><small>Last check / status</small><strong>${host.last_checked ? esc(new Date(host.last_checked).toLocaleString()) : "Unchecked"} · ${host.reachable === 1 ? "Reachable" : host.reachable === 0 ? "Unreachable" : "Unknown"}</strong></div><div class="detail-stat"><small>System</small><strong>${esc(host.system_name || "Unassigned")}</strong></div><div class="detail-stat"><small>Last seen</small><strong>${esc(new Date(host.last_seen).toLocaleString())} · ${host.seen_count} sightings</strong></div>` : "";
   const sshDetails = (host.services || []).includes("SSH") ? `<div class="detail-stat"><small>SSH username</small><strong>${esc(sshUsernameFor(host) || "Not configured")}</strong></div><div class="detail-stat"><small>SSH authentication</small><strong>${esc(host.ssh_auth_status || "Not attempted")}${host.ssh_auth_method ? ` · ${esc(host.ssh_auth_method)}` : ""}</strong></div>${host.ssh_auth_error ? `<div class="detail-stat detail-wide"><small>SSH diagnostic</small><strong>${esc(host.ssh_auth_error)}</strong></div>` : ""}` : "";
-  const deleteAction = remembered ? `<div class="detail-section danger-zone"><h4>Inventory control</h4><button class="danger-button" id="deleteRememberedDetail" type="button">Remove from inventory</button></div>` : "";
+  const deleteAction = remembered ? `<div class="detail-section danger-zone"><h4>Inventory control</h4><div class="section-actions"><button class="flag-button ${host.deletion_candidate ? "flag-active" : ""}" id="flagRememberedDetail" type="button">${host.deletion_candidate ? "Clear red flag" : "⚑ Mark deletion candidate"}</button><button class="button ghost compact" id="moveRememberedDetail" type="button">Move to system…</button><button class="danger-button" id="deleteRememberedDetail" type="button">Remove from inventory</button></div></div>` : "";
   $("#hostDetail").innerHTML = `<div class="host-detail-hero"><p class="eyebrow">${esc(host.site)} · ${esc(host.vlan)}</p><h2>${esc(host.hostname || "Hostname unresolved")}</h2><p>${esc(host.ip)} · ${esc(host.cidr)}</p><span class="detail-role">${esc(host.role || "Network Endpoint")}</span></div><div class="host-detail-body"><div class="detail-grid"><div class="detail-stat"><small>Role</small><strong>${esc(host.role || "Network Endpoint")}</strong></div><div class="detail-stat"><small>Operating system</small><strong>${esc(host.os_version || host.os_family)}</strong></div><div class="detail-stat"><small>OS evidence</small><strong>${esc(host.os_evidence)} · ${host.os_confidence || 0}%</strong></div><div class="detail-stat"><small>Hostname source</small><strong>${esc(host.hostname_source || "Resolved")}</strong></div><div class="detail-stat"><small>Resource status</small><strong>${esc(host.resource_status || "Not collected")}</strong></div>${sshDetails}${memory}</div><div class="detail-section"><h4>Verified connection paths</h4><div class="service-chips">${host.services.map(serviceChip).join("")}</div></div>${resources ? `<div class="detail-section"><h4>Observed resources</h4><div class="detail-grid">${resources}</div></div>` : ""}${links.length ? `<div class="detail-section"><h4>Connection shortcuts</h4><div class="detail-links">${links.join("")}</div></div>` : ""}${deleteAction}</div>`;
   $("#hostDialog").showModal();
   if (remembered) $("#deleteRememberedDetail").addEventListener("click", () => confirmDeleteRemembered(host));
+  if (remembered) $("#flagRememberedDetail").onclick = () => toggleCandidate(host);
+  if (remembered) $("#moveRememberedDetail").onclick = () => { $("#hostDialog").close(); openMoveDialog([host]); };
 }
 $("#hostSearch").addEventListener("input", renderTable);
 $$('[data-host-filter]').forEach(input => input.addEventListener("input", () => { state.hostTable.filters[input.dataset.hostFilter] = input.value.trim(); renderTable(); }));
@@ -342,7 +385,7 @@ $("#selectVisibleButton").addEventListener("click", () => { filteredResults().fo
 $("#clearSelectionButton").addEventListener("click", () => { state.selected.clear(); renderTable(); });
 
 function filteredRemembered() {
-  return tableRows(state.remembered, state.rememberedTable, rememberedColumnValue, $("#rememberedSearch").value);
+  return tableRows(state.remembered.filter(groupMatches), state.rememberedTable, rememberedColumnValue, $("#rememberedSearch").value);
 }
 
 function rememberedColumnValue(host, key, raw = false) {
@@ -370,13 +413,15 @@ function updateRememberedSelectionControls(rows) {
 
 function renderRemembered() {
   const rows = filteredRemembered();
+  $("#inventoryGroupBar").classList.toggle("hidden", !state.inventoryGroup);
+  $("#inventoryGroupLabel").textContent = state.inventoryGroup ? `Showing: ${state.inventoryGroup.label}` : "";
   $("#navRememberedCount").textContent = state.remembered.length;
   $("#rememberedCount").textContent = `${rows.length} remembered host${rows.length === 1 ? "" : "s"}`;
   $("#rememberedTable").innerHTML = rows.length ? rows.map(host => {
     const index = state.remembered.indexOf(host), seen = new Date(host.last_seen);
-    const direct = String(host.cidr || "").endsWith("/32");
-    const siteCell = direct ? `<div class="site-editor"><input data-site-input value="${esc(host.site)}" maxlength="60" aria-label="Site for ${esc(host.hostname)}"><button data-site-save type="button">Save</button></div><small>${host.site_locked ? "Manual site" : "Direct server site"} · ${esc(host.vlan)} · ${esc(host.cidr)}</small>` : `<strong>${esc(host.site)}</strong><small>${esc(host.vlan)} · ${esc(host.cidr)}</small>`;
-    return `<tr tabindex="0" data-remembered-index="${index}"><td class="select-cell"><input type="checkbox" data-remembered-select="${esc(hostKey(host))}" aria-label="Select ${esc(host.hostname || host.ip)}" ${state.rememberedSelected.has(hostKey(host)) ? "checked" : ""}></td><td><strong>${esc(host.hostname)}</strong><small>${esc(host.ip)}</small></td><td><div class="role-editor"><input data-role-input value="${esc(host.role)}" maxlength="80" aria-label="Role for ${esc(host.hostname)}"><button data-role-save type="button">Save</button></div>${host.role_locked ? '<small class="manual-role">Manual role</small>' : '<small>Defaults to hostname</small>'}</td><td>${siteCell}</td><td><div class="service-chips">${(host.services || []).map(serviceChip).join("")}</div></td><td><strong>${esc(host.os_version || host.os_family)}</strong><small>${esc(host.os_evidence)}</small></td><td><small>${esc(resourceText(host))}</small></td><td><strong>${esc(seen.toLocaleDateString())}</strong><small>${esc(seen.toLocaleTimeString())}</small></td><td><span class="seen-count">${host.seen_count}</span></td><td><div class="row-actions"><button class="danger-icon" data-delete-remembered type="button" title="Remove from inventory" aria-label="Remove ${esc(host.hostname)} from inventory">×</button><span class="row-open">↗</span></div></td></tr>`;
+    const direct = host.direct_target || String(host.cidr || "").endsWith("/32");
+    const siteCell = direct ? `<div class="site-editor"><input data-site-input value="${esc(host.site)}" maxlength="60" aria-label="Site for ${esc(host.hostname)}"><button data-site-save type="button">Save</button></div><small>${host.site_locked ? "Manual site" : "Direct target site"} · No VLAN · ${esc(host.cidr)}</small>` : `<strong>${esc(host.site)}</strong><small>${esc(host.vlan || "No VLAN")} · ${esc(host.cidr)}</small>`;
+    return `<tr tabindex="0" data-remembered-index="${index}" class="${host.deletion_candidate ? "candidate-row" : ""}"><td class="select-cell"><input type="checkbox" data-remembered-select="${esc(hostKey(host))}" aria-label="Select ${esc(host.hostname || host.ip)}" ${state.rememberedSelected.has(hostKey(host)) ? "checked" : ""}></td><td><strong>${host.deletion_candidate ? '<span class="red-flag" title="Deletion candidate">⚑</span> ' : ""}${esc(host.hostname)}</strong><small>${esc(host.ip)}</small></td><td><div class="role-editor"><input data-role-input value="${esc(host.role)}" maxlength="80" aria-label="Role for ${esc(host.hostname)}"><button data-role-save type="button">Save</button></div>${host.role_locked ? '<small class="manual-role">Manual role</small>' : '<small>Defaults to hostname</small>'}</td><td>${siteCell}</td><td><div class="service-chips">${(host.services || []).map(serviceChip).join("")}</div></td><td><strong>${esc(host.os_version || host.os_family)}</strong><small>${esc(host.os_evidence)}</small></td><td><small>${esc(resourceText(host))}</small></td><td><strong>${esc(seen.toLocaleDateString())}</strong><small>${esc(seen.toLocaleTimeString())}</small></td><td><span class="seen-count">${host.seen_count}</span></td><td><div class="row-actions"><button class="flag-button ${host.deletion_candidate ? "flag-active" : ""}" data-flag-remembered type="button" aria-pressed="${Boolean(host.deletion_candidate)}" title="${host.deletion_candidate ? "Clear red flag" : "Mark deletion candidate"}" aria-label="${host.deletion_candidate ? "Clear red flag for" : "Mark deletion candidate:"} ${esc(host.hostname)}">⚑</button><button class="danger-icon" data-delete-remembered type="button" title="Remove from inventory" aria-label="Remove ${esc(host.hostname)} from inventory">×</button><span class="row-open">↗</span></div></td></tr>`;
   }).join("") : '<tr><td colspan="10" class="table-empty">No resolved hosts match the current filters.</td></tr>';
   $$('[data-remembered-index]').forEach(row => {
     row.addEventListener("click", event => { if (!event.target.closest("input,button,a")) showHost(state.remembered[Number(row.dataset.rememberedIndex)], true); });
@@ -421,6 +466,9 @@ function renderRemembered() {
     const row = button.closest("tr"), host = state.remembered[Number(row.dataset.rememberedIndex)];
     confirmDeleteRemembered(host);
   }));
+  $$('[data-flag-remembered]').forEach(button => button.onclick = event => {
+    event.stopPropagation(); toggleCandidate(state.remembered[Number(button.closest("tr").dataset.rememberedIndex)]);
+  });
   updateSortButtons("[data-remembered-sort]", state.rememberedTable);
   updateRememberedSelectionControls(rows);
 }
@@ -446,7 +494,7 @@ async function loadRemembered() {
     const validKeys = new Set(state.remembered.map(hostKey));
     state.rememberedSelected = new Set([...state.rememberedSelected].filter(key => validKeys.has(key)));
     state.systemSelected = new Set([...state.systemSelected].filter(key => validKeys.has(key)));
-    renderRemembered(); renderOverview(overview); renderSystems();
+    renderRemembered(); renderOverview(overview); renderSystems(); renderCandidates();
   } catch (error) { toast(`Remembered hosts unavailable: ${error.message}`); }
 }
 $("#rememberedSearch").addEventListener("input", renderRemembered);
@@ -471,7 +519,7 @@ function openExportDialog(source) {
   state.exportSource = source;
   if (!$("#exportLinuxSshUser").value) $("#exportLinuxSshUser").value = state.job?.config?.linux_ssh_username || "";
   if (!$("#exportWindowsSshUser").value) $("#exportWindowsSshUser").value = state.job?.config?.windows_ssh_username || "";
-  $("#exportSelectionSummary").textContent = `Creates sessions for ${count} selected host${count === 1 ? "" : "s"}.${source !== "scan" ? " Folders follow your saved systems and server order." : ""} Windows receives SSH and RDP; Linux receives SSH.`;
+  $("#exportSelectionSummary").textContent = `Creates role-named sessions for ${count} selected host${count === 1 ? "" : "s"}.${source !== "scan" ? " Sessions sit directly inside their saved system folder." : ""} Windows receives SSH and RDP; Linux receives SSH. Duplicate role names receive a numeric suffix.`;
   $("#exportDialog").showModal();
 }
 $("#exportButton").addEventListener("click", () => openExportDialog("scan"));
@@ -515,12 +563,13 @@ function systemSelectionControls() {
   $("#systemsExportButton").disabled = !count;
   $("#systemMoveButton").disabled = !count;
 }
-async function moveHosts(id, hosts, position) {
+async function moveHosts(id, hosts, position, clearSelection = false) {
   if (!hosts.length) return;
   try {
     await post("/api/systems/move", {system_id:id, hosts:hostSelection(hosts), ...(position == null ? {} : {position})});
-    await loadRemembered(); toast(`Saved order for ${hosts.length} host${hosts.length === 1 ? "" : "s"}.`);
-  } catch (error) { toast(error.message); }
+    if (clearSelection) state.systemSelected.clear();
+    await loadRemembered(); toast(`Saved order for ${hosts.length} host${hosts.length === 1 ? "" : "s"}.`); return true;
+  } catch (error) { toast(error.message); return false; }
 }
 async function reorderSystem(id, direction) {
   const ids = state.systems.map(system => system.id), index = ids.indexOf(id), target = index + direction;
@@ -537,7 +586,7 @@ function renderSystems() {
     const hosts = visibleSystemHosts(system.id);
     return `<section class="panel system-card" data-system="${esc(system.id)}"><header><div><h3>${esc(system.name)}</h3><small>${systemHosts(system.id).length} servers · ${hosts.length} visible</small></div><div class="system-actions">${system.id ? `<button class="button ghost compact" data-system-up ${index === 0 ? "disabled" : ""} aria-label="Move system up">↑</button><button class="button ghost compact" data-system-down ${index === state.systems.length-1 ? "disabled" : ""} aria-label="Move system down">↓</button><button class="button ghost compact" data-system-rename>Rename</button><button class="danger-icon" data-system-delete aria-label="Delete system">×</button>` : ""}</div></header><div class="system-hosts">${hosts.map(host => {
       const idx = state.remembered.indexOf(host), checked = state.systemSelected.has(hostKey(host));
-      return `<div class="system-host ${checked ? "selected" : ""}" draggable="true" data-system-host="${idx}"><input type="checkbox" ${checked ? "checked" : ""} aria-label="Select ${esc(host.hostname)}"><span class="drag-handle" aria-hidden="true">⠿</span><button class="system-host-open"><strong>${esc(host.hostname)}</strong><small>${esc(host.ip)} · ${esc(host.site)} · ${esc(host.os_version || host.os_family)}</small></button><button class="order-button" data-host-up aria-label="Move host up">↑</button><button class="order-button" data-host-down aria-label="Move host down">↓</button></div>`;
+      return `<div class="system-host ${checked ? "selected" : ""}" draggable="true" data-system-host="${idx}"><input type="checkbox" ${checked ? "checked" : ""} aria-label="Select ${esc(host.hostname)}"><span class="drag-handle" aria-hidden="true">⠿</span><button class="system-host-open"><strong>${host.deletion_candidate ? '<span class="red-flag">⚑</span> ' : ""}${esc(host.hostname)}</strong><small>${esc(host.role)} · ${esc(host.ip)} · ${esc(host.site)}</small></button><button class="order-button" data-host-move>Move…</button><button class="order-button" data-host-up aria-label="Move host up">↑</button><button class="order-button" data-host-down aria-label="Move host down">↓</button></div>`;
     }).join("") || '<p class="drop-placeholder">Drop servers here, or select servers and use Move selected.</p>'}</div></section>`;
   }).join("");
   $$('[data-system-host]').forEach(row => {
@@ -547,13 +596,14 @@ function renderSystems() {
       row.classList.toggle("selected", event.target.checked); systemSelectionControls();
     };
     row.querySelector(".system-host-open").onclick = () => showHost(host, true);
+    row.querySelector("[data-host-move]").onclick = () => openMoveDialog([host]);
     row.ondragstart = event => {
       state.dragging = true;
       const hosts = state.systemSelected.has(hostKey(host)) ? exportHosts("systems") : [host];
       event.dataTransfer.setData("application/netatlas-hosts", JSON.stringify(hostSelection(hosts)));
       event.dataTransfer.effectAllowed = "move";
     };
-    row.ondragend = () => { state.dragging = false; $$(".drop-active").forEach(el => el.classList.remove("drop-active")); };
+    row.ondragend = () => { stopDragScroll(); $$(".drop-active").forEach(el => el.classList.remove("drop-active")); };
     for (const [selector, direction] of [["[data-host-up]", -1], ["[data-host-down]", 1]]) {
       const all = systemHosts(host.system_id || ""), index = all.indexOf(host);
       const button = row.querySelector(selector); button.disabled = index + direction < 0 || index + direction >= all.length;
@@ -565,7 +615,7 @@ function renderSystems() {
     card.ondragover = event => { if (event.dataTransfer.types.includes("application/netatlas-hosts")) { event.preventDefault(); card.classList.add("drop-active"); } };
     card.ondragleave = event => { if (!card.contains(event.relatedTarget)) card.classList.remove("drop-active"); };
     card.ondrop = event => {
-      event.preventDefault(); card.classList.remove("drop-active"); state.dragging = false;
+      event.preventDefault(); card.classList.remove("drop-active"); stopDragScroll();
       try {
         const selection = JSON.parse(event.dataTransfer.getData("application/netatlas-hosts"));
         const keys = new Set(selection.map(hostKey)), hosts = state.remembered.filter(host => keys.has(hostKey(host)));
@@ -573,7 +623,7 @@ function renderSystems() {
         const target = targetRow ? state.remembered[Number(targetRow.dataset.systemHost)] : null;
         const remaining = systemHosts(id).filter(host => !keys.has(hostKey(host)));
         if (target && keys.has(hostKey(target))) return;
-        moveHosts(id, hosts, target ? remaining.indexOf(target) : remaining.length);
+        moveHosts(id, hosts, target ? remaining.indexOf(target) : remaining.length, true);
       } catch (_) { toast("Drag remembered servers into a system."); }
     };
     if (!id) return;
@@ -598,8 +648,67 @@ $("#newSystemForm").onsubmit = async event => {
 $("#systemSearch").oninput = renderSystems;
 $("#systemSelectAll").onclick = () => { [...state.systems, {id:""}].flatMap(system => visibleSystemHosts(system.id)).forEach(host => state.systemSelected.add(hostKey(host))); renderSystems(); };
 $("#systemClear").onclick = () => { state.systemSelected.clear(); renderSystems(); };
-$("#systemMoveButton").onclick = () => moveHosts($("#systemMoveTarget").value, exportHosts("systems"));
+$("#systemMoveButton").onclick = () => moveHosts($("#systemMoveTarget").value, exportHosts("systems"), undefined, true);
 $("#systemsExportButton").onclick = () => openExportDialog("systems");
+
+function stopDragScroll() {
+  state.dragging = false; state.dragScrollSpeed = 0;
+  if (state.dragScrollFrame) cancelAnimationFrame(state.dragScrollFrame);
+  state.dragScrollFrame = null;
+}
+function dragScrollTick() {
+  state.dragScrollFrame = null;
+  if (!state.dragging || !state.dragScrollSpeed) return;
+  window.scrollBy(0, state.dragScrollSpeed);
+  state.dragScrollFrame = requestAnimationFrame(dragScrollTick);
+}
+document.addEventListener("dragover", event => {
+  if (!state.dragging) return;
+  const edge = 100, y = event.clientY, height = window.innerHeight;
+  state.dragScrollSpeed = y < edge ? -Math.ceil(24 * (1-y/edge)) : y > height-edge ? Math.ceil(24 * (1-(height-y)/edge)) : 0;
+  if (state.dragScrollSpeed && !state.dragScrollFrame) state.dragScrollFrame = requestAnimationFrame(dragScrollTick);
+});
+document.addEventListener("drop", stopDragScroll);
+document.addEventListener("dragend", stopDragScroll);
+window.addEventListener("blur", stopDragScroll);
+
+function openMoveDialog(hosts) {
+  if (!hosts.length) return;
+  state.pendingMove = hosts;
+  $("#moveDialogTarget").innerHTML = [...state.systems, {id:"", name:"Unassigned"}].map(system => `<option value="${esc(system.id)}">${esc(system.name)}</option>`).join("");
+  $("#moveDialogTarget").value = hosts[0].system_id || "";
+  $("#moveDialogSummary").textContent = hosts.length === 1 ? `Move ${hosts[0].role || hosts[0].hostname} (${hosts[0].ip}).` : `Move ${hosts.length} servers.`;
+  $("#moveDialog").showModal();
+}
+$("#confirmSystemMove").onclick = async () => {
+  const button = $("#confirmSystemMove"); button.disabled = true;
+  try { if (await moveHosts($("#moveDialogTarget").value, state.pendingMove || [], undefined, true)) $("#moveDialog").close(); }
+  finally { button.disabled = false; }
+};
+
+async function toggleCandidate(host) {
+  if (!host) return;
+  try {
+    await post("/api/remembered-hosts/flag", {site:host.site, ip:host.ip, flagged:!host.deletion_candidate});
+    const detailOpen = $("#hostDialog").open;
+    if (detailOpen) $("#hostDialog").close();
+    await loadRemembered();
+    if (detailOpen) showHost(state.remembered.find(item => hostKey(item) === hostKey(host)), true);
+    toast(host.deletion_candidate ? "Red flag cleared." : "Marked as a deletion candidate.");
+  } catch (error) { toast(error.message); }
+}
+function renderCandidates() {
+  const flagged = state.remembered.filter(host => host.deletion_candidate).sort((a,b) => (b.flagged_at || "").localeCompare(a.flagged_at || ""));
+  $("#navCandidateCount").textContent = flagged.length;
+  const query = $("#candidateSearch").value.trim().toLowerCase();
+  const hosts = flagged.filter(host => `${host.hostname} ${host.role} ${host.ip} ${host.site} ${host.vlan} ${host.os_version}`.toLowerCase().includes(query));
+  $("#candidateCount").textContent = `${hosts.length} flagged hosts`;
+  $("#candidateTable").innerHTML = hosts.map((host,index) => `<tr class="candidate-row"><td><button class="candidate-open" data-candidate-open="${index}"><strong>⚑ ${esc(host.hostname)}</strong><small>${esc(host.ip)}</small></button></td><td>${esc(host.role)}</td><td>${esc(host.site)}<small>${esc(host.vlan || "No VLAN")}</small></td><td>${esc(host.os_version || host.os_family)}</td><td>${esc(new Date(host.flagged_at).toLocaleString())}</td><td><div class="row-actions"><button class="flag-button flag-active" data-candidate-clear="${index}">Clear flag</button><button class="danger-button" data-candidate-delete="${index}">Remove from inventory</button></div></td></tr>`).join("") || '<tr><td colspan="6" class="table-empty">No deletion candidates match.</td></tr>';
+  $$('[data-candidate-open]').forEach(button => button.onclick = () => showHost(hosts[Number(button.dataset.candidateOpen)], true));
+  $$('[data-candidate-clear]').forEach(button => button.onclick = () => toggleCandidate(hosts[Number(button.dataset.candidateClear)]));
+  $$('[data-candidate-delete]').forEach(button => button.onclick = () => confirmDeleteRemembered(hosts[Number(button.dataset.candidateDelete)]));
+}
+$("#candidateSearch").oninput = renderCandidates;
 
 function filteredDiscoveries() {
   const query = $("#discoverySearch").value.trim().toLowerCase();
@@ -650,6 +759,9 @@ function fillSchedule(config) {
   $("#bgTimeout").value = config.timeout || 0.5; $("#bgConcurrency").value = config.concurrency || 64;
   $("#bgSshResources").checked = Boolean(config.ssh_resources);
   $("#bgLinuxUser").value = config.linux_ssh_username || ""; $("#bgWindowsUser").value = config.windows_ssh_username || "";
+  $("#bgDirectGroup").value = config.direct_target_group || "Direct targets";
+  $("#bgDirectTargets").value = (config.direct_targets || []).map(target => target.name ? `${target.name}, ${target.ip || target.cidr}` : target.ip || target.cidr).join("\n");
+  $("#bgDirectOnly").checked = config.scan_mode === "direct_only";
 }
 async function loadSchedule(fill = false) {
   try {
@@ -669,6 +781,7 @@ $("#scheduleForm").onsubmit = async event => {
   event.preventDefault(); const button = $("#saveSchedule"); button.disabled = true;
   try {
     await post("/api/schedule", {interval_minutes:Number($("#bgInterval").value), config:{
+      scan_mode:$("#bgDirectOnly").checked ? "direct_only" : "combined", direct_target_group:$("#bgDirectGroup").value.trim(), direct_targets:parseDirectTargets($("#bgDirectTargets").value),
       sites:[{name:$("#bgSiteAName").value.trim(), vlans:parseVlans($("#bgSiteAVlans").value)}, {name:$("#bgSiteBName").value.trim(), vlans:parseVlans($("#bgSiteBVlans").value)}],
       concurrency:Number($("#bgConcurrency").value), timeout:Number($("#bgTimeout").value), auxiliary_ports:true, ssh_resources:$("#bgSshResources").checked,
       linux_ssh_username:$("#bgLinuxUser").value.trim(), linux_ssh_password:$("#bgLinuxPassword").value,
@@ -688,8 +801,20 @@ setInterval(async () => {
 }, 5000);
 
 async function loadHistory() {
-  try { state.jobs = (await api("/api/scans")).sort((a,b) => b.created_at.localeCompare(a.created_at)); renderHistory(); if (!state.job && state.jobs.length) { state.job = state.jobs[0]; render(state.job); if (state.job.status === "running") { showRunning(state.job); state.timer = setInterval(poll, 900); } } } catch (_) {}
+  try { state.jobs = (await api("/api/scans")).reverse().sort((a,b) => b.created_at.localeCompare(a.created_at)); renderHistory(); if (!state.job && state.jobs.length) { state.job = state.jobs[0]; render(state.job); if (["queued", "running"].includes(state.job.status)) { showRunning(state.job); state.timer = setInterval(poll, 900); } } } catch (_) {}
 }
-function renderHistory() { $("#historyList").innerHTML = state.jobs.length ? state.jobs.slice(0,10).map(j => `<div class="history-item"><div><strong>${esc(j.config?.sites?.map(x=>x.name).join(" + ") || "Network scan")}</strong><small>${new Date(j.created_at).toLocaleString()} · ${j.summary.hosts} hosts · ${j.status}</small></div><button data-job="${j.id}">Open</button></div>`).join("") : '<div class="empty-state" style="height:150px"><p>No scan history yet.</p></div>'; $$('[data-job]').forEach(x => x.onclick = () => { state.job = state.jobs.find(j => j.id === x.dataset.job); render(state.job); $("#historyDialog").close(); }); }
-$("#historyButton").addEventListener("click", () => $("#historyDialog").showModal());
+function renderHistory() {
+  $("#historyList").innerHTML = state.jobs.length ? state.jobs.slice(0,20).map(job => {
+    const names = job.config?.scan_mode === "direct_only" ? job.config.direct_target_group : [...(job.config?.sites || []).filter(site => site.vlans?.length).map(site => site.name), ...(job.config?.direct_targets?.length ? [job.config.direct_target_group || "Direct targets"] : [])].join(" + ");
+    return `<div class="history-item"><div><span class="history-type ${job.config?.background_scan ? "background" : ""}">${job.config?.background_scan ? "Background scan" : "Manual scan"}</span><strong>${esc(names || "Network scan")}</strong><small>${new Date(job.created_at).toLocaleString()} · ${job.summary.hosts} hosts · ${job.status}</small></div><button data-job="${job.id}">Open</button></div>`;
+  }).join("") : '<div class="empty-state" style="height:150px"><p>No scan history yet.</p></div>';
+  $$('[data-job]').forEach(button => button.onclick = async () => {
+    try {
+      state.job = await api(`/api/scans/${button.dataset.job}`); clearInterval(state.timer); state.timer = null;
+      $("#historyDialog").close(); go("results"); render(state.job);
+      if (["queued", "running"].includes(state.job.status)) { showRunning(state.job); state.timer = setInterval(poll, 900); }
+    } catch (error) { toast(error.message); }
+  });
+}
+$("#historyButton").addEventListener("click", async () => { await loadHistory(); $("#historyDialog").showModal(); });
 checkHealth();

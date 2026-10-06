@@ -15,6 +15,7 @@
         <button class="nav-item active" data-view="overview"><span>⌁</span> Overview</button>
         <button class="nav-item" data-view="results"><span>▦</span> Hosts <b id="navHostCount">0</b></button>
         <button class="nav-item" data-view="remembered"><span>★</span> Remembered <b id="navRememberedCount">0</b></button>
+        <button class="nav-item" data-view="candidates"><span>⚑</span> Red flags <b id="navCandidateCount">0</b></button>
         <button class="nav-item" data-view="systems"><span>▤</span> Systems</button>
         <button class="nav-item" data-view="discoveries"><span>＋</span> New hosts <b id="navDiscoveryCount">0</b></button>
         <button class="nav-item" data-view="background"><span>◷</span> Background scans</button>
@@ -83,9 +84,9 @@
             <div class="donut-wrap">
               <div class="donut" id="osDonut"><div><strong id="donutTotal">0</strong><span>hosts</span></div></div>
               <div class="legend">
-                <p><i class="windows"></i>Windows <b id="osWindows">0</b></p>
-                <p><i class="linux"></i>Linux <b id="osLinux">0</b></p>
-                <p><i class="unknown"></i>Unknown / other <b id="osUnknown">0</b></p>
+                <button type="button" data-os-family="Windows"><i class="windows"></i>Windows <b id="osWindows">0</b></button>
+                <button type="button" data-os-family="Linux"><i class="linux"></i>Linux <b id="osLinux">0</b></button>
+                <button type="button" data-os-family="other"><i class="unknown"></i>Unknown / other <b id="osUnknown">0</b></button>
               </div>
             </div>
           </section>
@@ -128,6 +129,7 @@
           <div class="section-actions"><span class="memory-status"><i></i> Stored in the local NetAtlas database</span><button class="button primary" id="rememberedExportButton" disabled>Export selected</button></div>
         </div>
         <div class="table-panel remembered-panel">
+          <div id="inventoryGroupBar" class="inventory-group-bar hidden"><strong id="inventoryGroupLabel"></strong><button class="button ghost compact" id="clearInventoryGroup">Show all remembered hosts</button></div>
           <div class="table-tools">
             <label class="search"><span>⌕</span><input id="rememberedSearch" type="search" placeholder="Search all columns…"></label>
             <button class="button ghost compact" id="rememberedSelectVisibleButton" type="button">Select visible</button>
@@ -147,13 +149,18 @@
         </div>
       </section>
 
+      <section class="view" id="candidatesView">
+        <div class="section-heading"><div><p class="eyebrow">INVENTORY REVIEW</p><h2>Deletion candidates</h2><p>Red flags mark servers for review. Flagged servers stay in Remembered Hosts, Overview and exports until you explicitly remove them.</p></div></div>
+        <div class="table-panel"><div class="table-tools"><label class="search"><span>⌕</span><input id="candidateSearch" type="search" placeholder="Search deletion candidates…"></label><strong id="candidateCount">0 flagged hosts</strong></div><div class="table-scroll"><table><thead><tr><th>Endpoint</th><th>Role</th><th>Site / VLAN</th><th>OS</th><th>Flagged date</th><th>Actions</th></tr></thead><tbody id="candidateTable"></tbody></table></div></div>
+      </section>
+
       <section class="view" id="systemsView">
-        <div class="section-heading"><div><p class="eyebrow">SESSION LIBRARY</p><h2>Systems</h2><p>Select several servers and drag them together into a system. Drop above a server to set its order. Exports follow system order, with Windows and Linux folders inside each system.</p></div><button class="button primary" id="systemsExportButton" disabled>Export selected</button></div>
+        <div class="section-heading"><div><p class="eyebrow">SESSION LIBRARY</p><h2>Systems</h2><p>Select several servers and drag them together into a system, or use Move to system. Drop above a server to set its order. Hold near the top or bottom of the screen to scroll while dragging.</p></div><button class="button primary" id="systemsExportButton" disabled>Export selected</button></div>
         <div class="panel system-toolbar">
           <form id="newSystemForm"><label class="sr-only" for="newSystemName">New system name</label><input id="newSystemName" placeholder="New system, e.g. RMS-Site-A" maxlength="80" required><button class="button primary" type="submit">Create system</button></form>
           <label class="search"><span>⌕</span><input id="systemSearch" type="search" placeholder="Find hosts or systems…"></label>
           <button class="button ghost" id="systemSelectAll">Select visible</button><button class="button ghost" id="systemClear">Clear</button><strong id="systemSelectionCount">0 selected</strong>
-          <select id="systemMoveTarget" aria-label="Destination system"></select><button class="button ghost" id="systemMoveButton">Move selected</button>
+          <label class="move-target-label">Move to system<select id="systemMoveTarget" aria-label="Destination system"></select></label><button class="button ghost" id="systemMoveButton">Move selected</button>
         </div>
         <div id="systemsBoard" class="systems-board"></div>
       </section>
@@ -178,6 +185,10 @@
             <label class="toggle"><input id="bgSshResources" type="checkbox"><i></i><span><b>Collect resources via SSH</b><small>Separate Linux and Windows profiles</small></span></label>
             <label>Linux SSH username<input id="bgLinuxUser" autocomplete="off"></label><label>Linux SSH password<input id="bgLinuxPassword" type="password" autocomplete="new-password"></label>
             <label>Windows SSH username<input id="bgWindowsUser" autocomplete="off" placeholder="DOMAIN\user"></label><label>Windows SSH password<input id="bgWindowsPassword" type="password" autocomplete="new-password"></label>
+            <div class="divider"></div><h3>Direct targets / scopes</h3>
+            <label class="toggle"><input id="bgDirectOnly" type="checkbox"><i></i><span><b>Direct scopes only</b><small>Ignore the VLAN lists</small></span></label>
+            <label>Target site<input id="bgDirectGroup" value="Direct targets" maxlength="60"></label>
+            <label>IPs or CIDR segments<textarea id="bgDirectTargets" rows="4" spellcheck="false" placeholder="10.30.95.0/24"></textarea><small class="field-help">Optional direct scopes with no VLAN assignment.</small></label>
             <p class="credential-note">Scheduled passwords are encrypted in the local data folder so scans resume after restart. Re-enter passwords when replacing the schedule. Stopping clears saved credentials.</p>
             <button class="button ghost wide" type="button" id="copyScanSetup">Copy current scan setup</button>
             <button class="button primary wide" type="submit" id="saveSchedule">Save & start schedule</button>
@@ -215,10 +226,10 @@
             <label class="toggle" id="winrmOption"><input id="windowsResources" type="checkbox"><i></i><span><b>Windows via WinRM</b><small id="winrmHelp">Uses your current Windows identity</small></span></label>
             <label class="toggle sub-toggle hidden" id="sslToggle"><input id="winrmSsl" type="checkbox"><i></i><span><b>Use WinRM HTTPS</b></span></label>
             <div class="divider"></div>
-            <p class="mini-title">Direct server targets</p>
-            <label class="toggle direct-only-toggle"><input id="directOnly" type="checkbox"><i></i><span><b>Direct servers only</b><small>Ignore both VLAN lists for this run</small></span></label>
+            <p class="mini-title">Direct server targets and scopes</p>
+            <label class="toggle direct-only-toggle"><input id="directOnly" type="checkbox"><i></i><span><b>Direct targets / scopes only</b><small>Ignore both VLAN lists for this run</small></span></label>
             <label>Target group / site<input id="directTargetGroup" value="Direct targets" maxlength="60"></label>
-            <label>Individual IPv4 addresses<textarea id="directTargets" rows="5" spellcheck="false" placeholder="10.10.10.25&#10;Database, 10.10.10.26"></textarea><small class="field-help">One IP per line. An optional label can precede the IP.</small></label>
+            <label>IPv4 addresses or CIDR scopes<textarea id="directTargets" rows="5" spellcheck="false" placeholder="10.10.10.25&#10;Database, 10.10.10.26&#10;10.30.95.0/24"></textarea><small class="field-help">One IP or segment per line, optionally preceded by a label. All use the target site above, with no VLAN assigned. Scopes support /20 through /32.</small></label>
             <div class="estimate"><span>Estimated scope</span><strong id="scopeEstimate">5,080 addresses</strong></div>
             <button class="button primary wide" type="submit" id="startScanButton">Start discovery <span>→</span></button>
             <p class="safety-note">Only scan networks you own or are authorized to assess.</p>
@@ -246,6 +257,7 @@
   </dialog>
 
   <dialog id="historyDialog"><div class="dialog-card history-card"><button class="dialog-close" aria-label="Close" onclick="this.closest('dialog').close()">×</button><p class="eyebrow">LOCAL HISTORY</p><h2>Recent scans</h2><div id="historyList"></div></div></dialog>
+  <dialog id="moveDialog"><div class="dialog-card"><button class="dialog-close" aria-label="Close" onclick="this.closest('dialog').close()">×</button><p class="eyebrow">SYSTEM MEMBERSHIP</p><h2>Move to system</h2><p id="moveDialogSummary"></p><label class="move-target-label">Destination system<select id="moveDialogTarget"></select></label><button class="button primary wide" id="confirmSystemMove" type="button">Move server</button></div></dialog>
   <dialog id="hostDialog"><div class="dialog-card host-detail-card"><button class="dialog-close" aria-label="Close" onclick="this.closest('dialog').close()">×</button><div id="hostDetail"></div></div></dialog>
   <div class="toast" id="toast" role="status"></div>
   <script src="/app.js"></script>
