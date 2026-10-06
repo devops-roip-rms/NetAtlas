@@ -762,7 +762,7 @@ def remember_job_hosts(job: ScanJob) -> int:
                     services_json=excluded.services_json,
                     open_ports_json=excluded.open_ports_json,
                     web_json=excluded.web_json,
-                    os_family=CASE WHEN excluded.os_family IN ('', 'Unknown') THEN remembered_hosts.os_family ELSE excluded.os_family END,
+                    os_family=CASE WHEN excluded.os_family IN ('', 'Unknown') OR (excluded.os_confidence < remembered_hosts.os_confidence AND remembered_hosts.os_version<>'') THEN remembered_hosts.os_family ELSE excluded.os_family END,
                     os_version=CASE WHEN excluded.os_confidence < remembered_hosts.os_confidence AND remembered_hosts.os_version<>'' THEN remembered_hosts.os_version ELSE excluded.os_version END,
                     os_confidence=MAX(remembered_hosts.os_confidence, excluded.os_confidence),
                     os_evidence=CASE WHEN excluded.os_confidence < remembered_hosts.os_confidence THEN remembered_hosts.os_evidence ELSE excluded.os_evidence END,

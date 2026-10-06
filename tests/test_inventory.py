@@ -122,6 +122,11 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(stored["hostname"], host["hostname"])
         self.assertEqual(stored["resources"]["ram_gb"], "16")
         self.assertEqual(stored["os_version"], "RHEL 9.6")
+        lower_confidence = self.host(os_family="Windows", os_version="Windows fingerprint", os_confidence=82, resources={})
+        self.remember([lower_confidence])
+        stored = backend.list_remembered_hosts()[0]
+        self.assertEqual(stored["os_family"], "Linux")
+        self.assertEqual(stored["os_version"], "RHEL 9.6")
 
     def test_schedule_credentials_are_encrypted_and_resume_after_restart(self):
         config = {"sites": [{"name": "Test", "vlans": [{"name": "Test", "cidr": "192.0.2.1/32"}]}],
