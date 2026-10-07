@@ -44,7 +44,7 @@ WEB_DIR = APP_DIR / "web"
 DATA_DIR = Path(os.environ.get("NETATLAS_DATA_DIR", APP_DIR / "data")).resolve()
 DATA_DIR.mkdir(exist_ok=True)
 HOSTS_DB = DATA_DIR / "hosts.db"
-APP_VERSION = "1.2.9"
+APP_VERSION = "1.2.10"
 SENSITIVE_CONFIG_KEYS = {"ssh_password", "linux_ssh_password", "windows_ssh_password", "password"}
 
 PRIMARY_PORTS = {22: "SSH", 80: "HTTP", 443: "HTTPS", 3389: "RDP"}
@@ -843,6 +843,8 @@ def list_remembered_hosts() -> list[dict]:
         system = system_map.get(host.get("system_id"), {})
         host["system_name"] = system.get("name", "")
         host["system_order"] = system.get("position", 2147483647)
+        # Use the entire system catalog so selected-only exports retain their paths.
+        host["system_folder"] = system_folder(host["system_name"], [s["name"] for s in system_map.values()])
     return hosts
 
 
@@ -930,7 +932,7 @@ def delete_remembered_host(site: object, ip: object) -> dict:
 def list_systems() -> list[dict]:
     init_hosts_db()
     with closing(hosts_db_connection()) as connection:
-        return [dict(row) for row in connection.execute("SELECT * FROM systems ORDER BY position, name")]
+        return sorted([dict(row) for row in connection.execute("SELECT * FROM systems")], key=lambda system: system_name_key(system["name"]))
 
 
 def edit_system(payload: dict) -> dict:
@@ -1330,23 +1332,47 @@ def selected_hosts_from_list(source: list[dict], selection: object, source_name:
     return hosts
 
 
-def session_folder(host: dict) -> str:
+def system_name_key(name: str) -> tuple:
+    """Case-insensitive natural ordering: RMS-2 precedes RMS-10."""
+    return tuple(int(part) if part.isdigit() else part.casefold() for part in re.split(r"(\d+)", name))
+
+
+def system_folder(name: str, system_names: list[str]) -> str:
+    name = name or "Unassigned"
+    if re.fullmatch(r"\d+-\d+", name):
+        return f"RAFAEL\\{safe_name(name)}"
+    parts = name.split("-")
+    catalog = sorted({item for item in system_names if item}, key=lambda item: (system_name_key(item), item))
+    parents = []
+    # Shared hyphen prefixes become parents, while the full name stays the leaf.
+    for depth in range(1, len(parts)):
+        prefix = "-".join(parts[:depth]).casefold() + "-"
+        matches = [item for item in catalog if item.casefold().startswith(prefix)]
+        if len(matches) < 2:
+            break
+        # Mixed-case system names must share a single parent, not RMS and rms.
+        parents.append(safe_name(matches[0].split("-")[depth - 1]))
+    return "\\".join([*parents, safe_name(name)])
+
+
+def session_folder(host: dict, system_names: list[str] | None = None) -> str:
     if "system_id" in host:
-        return safe_name(host.get("system_name") or "Unassigned")
+        return host.get("system_folder") or system_folder(host.get("system_name"), system_names or [])
     folder = safe_name(host["site"])
     return f"{folder}\\{safe_name(host['vlan'])}" if host.get("vlan") else folder
 
 
 def ordered_export_hosts(hosts: list[dict]) -> list[dict]:
-    return sorted(hosts, key=lambda host: (int(host.get("system_order", 2147483647)),
+    return sorted(hosts, key=lambda host: (system_name_key(host.get("system_name") or "Unassigned"),
                   int(host.get("system_position", 0)), str(host.get("hostname", "")).lower(), host["site"], host["ip"]))
 
 
 def export_mobaxterm(job: ScanJob, linux_ssh_user: str = "", rdp_user: str = "", windows_ssh_user: str = "", hosts: list[dict] | None = None) -> bytes:
     sections: dict[str, list[tuple[str, str]]] = {}
+    system_names = [host.get("system_name", "") for host in job.results]
     for host in ordered_export_hosts(job.results if hosts is None else hosts):
         family = host.get("os_family")
-        folder = session_folder(host)
+        folder = session_folder(host, system_names)
         sessions: list[tuple[str, str]] = []
         base = safe_name(host.get("role") or host.get("hostname") or host["ip"])
         observed_ssh_user = clean_text(host.get("ssh_username"), 100)
@@ -1361,6 +1387,9 @@ def export_mobaxterm(job: ScanJob, linux_ssh_user: str = "", rdp_user: str = "",
             if "RDP" in host["services"]:
                 sessions.append((base, rdp_session(host, rdp_user)))
         if sessions:
+            parts = folder.split("\\")
+            for depth in range(1, len(parts)):
+                sections.setdefault("\\".join(parts[:depth]), [])
             sections.setdefault(folder, []).extend(sessions)
     lines = ["[Bookmarks]", "SubRep=NetAtlas", "ImgNum=41", ""]
     for index, folder in enumerate(sections, 1):
@@ -1380,23 +1409,25 @@ def export_mobaxterm(job: ScanJob, linux_ssh_user: str = "", rdp_user: str = "",
 def export_csv(job: ScanJob, linux_ssh_user: str = "", rdp_user: str = "", windows_ssh_user: str = "", hosts: list[dict] | None = None) -> bytes:
     buffer = io.StringIO(newline="")
     writer = csv.writer(buffer)
-    writer.writerow(["name", "protocol", "host", "port", "username", "folder", "url", "role"])
+    writer.writerow(["name", "protocol", "host", "port", "username", "folder", "url", "role", "system"])
+    system_names = [host.get("system_name", "") for host in job.results]
     for host in ordered_export_hosts(job.results if hosts is None else hosts):
         family = host.get("os_family")
-        folder = f"NetAtlas\\{session_folder(host)}"
+        folder = f"NetAtlas\\{session_folder(host, system_names)}"
+        system = host.get("system_name") or ("Unassigned" if "system_id" in host else "")
         name = host.get("hostname") or host["ip"]
         role = host.get("role") or infer_host_role(host)
         observed_ssh_user = clean_text(host.get("ssh_username"), 100)
         if family == "Windows":
-            writer.writerow([f"{name} - SSH", "SSH", host["ip"], 22, windows_ssh_user or observed_ssh_user or linux_ssh_user, folder, "", role])
-            writer.writerow([f"{name} - RDP", "RDP", host["ip"], 3389, rdp_user, folder, "", role])
+            writer.writerow([f"{name} - SSH", "SSH", host["ip"], 22, windows_ssh_user or observed_ssh_user or linux_ssh_user, folder, "", role, system])
+            writer.writerow([f"{name} - RDP", "RDP", host["ip"], 3389, rdp_user, folder, "", role, system])
         elif family == "Linux":
-            writer.writerow([f"{name} - SSH", "SSH", host["ip"], 22, linux_ssh_user or observed_ssh_user, folder, "", role])
+            writer.writerow([f"{name} - SSH", "SSH", host["ip"], 22, linux_ssh_user or observed_ssh_user, folder, "", role, system])
         else:
             if "SSH" in host["services"]:
-                writer.writerow([f"{name} - SSH", "SSH", host["ip"], 22, observed_ssh_user or linux_ssh_user or windows_ssh_user, folder, "", role])
+                writer.writerow([f"{name} - SSH", "SSH", host["ip"], 22, observed_ssh_user or linux_ssh_user or windows_ssh_user, folder, "", role, system])
             if "RDP" in host["services"]:
-                writer.writerow([f"{name} - RDP", "RDP", host["ip"], 3389, rdp_user, folder, "", role])
+                writer.writerow([f"{name} - RDP", "RDP", host["ip"], 3389, rdp_user, folder, "", role, system])
     return buffer.getvalue().encode("utf-8-sig")
 
 
@@ -1407,7 +1438,7 @@ def export_inventory_csv(job: ScanJob, hosts: list[dict] | None = None) -> bytes
         "site", "vlan", "cidr", "hostname", "hostname_source", "role", "ip", "services", "open_ports",
         "os_family", "os_version", "os_confidence", "os_evidence", "resource_status",
         "ssh_username", "ssh_auth_status", "ssh_auth_method", "ssh_auth_error",
-        "cpu_cores", "ram_gb", "disk_root_gb", "disk_c_gb", "disk_free_gb", "web_urls",
+        "cpu_cores", "ram_gb", "disk_root_gb", "disk_c_gb", "disk_free_gb", "web_urls", "system",
     ])
     for host in job.results if hosts is None else hosts:
         resources = host.get("resources", {})
@@ -1422,6 +1453,7 @@ def export_inventory_csv(job: ScanJob, hosts: list[dict] | None = None) -> bytes
             resources.get("cpu_cores", ""), resources.get("ram_gb", ""), resources.get("disk_root_gb", ""),
             resources.get("disk_c_gb", ""), resources.get("disk_free_gb", ""),
             ",".join(web.get("url", "") for web in host.get("web", [])),
+            host.get("system_name") or ("Unassigned" if "system_id" in host else ""),
         ])
     return buffer.getvalue().encode("utf-8-sig")
 

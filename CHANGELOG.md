@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.10
+
+- Clicking Move on a selected Systems host now moves all selected hosts; clicking an unselected host moves just that host.
+- Added a sortable, filterable System column to Remembered Hosts and a `system` column to session and inventory CSV exports.
+- MobaXterm groups numeric system names such as `99-3` and `392-3` under `RAFAEL`.
+- Shared hyphenated system prefixes create parent folders: `RMS-A/B` under `RMS`, `RMS-NP-A/B` under `RMS\NP`, keeping the full system name as the leaf. Selected-only exports retain the same paths using the full catalog.
+- All system cards, destination lists, API lists and exports use case-insensitive natural name order instead of creation/manual system order. Host ordering within systems remains adjustable.
+
 ## 1.2.9
 
 - Added Show/Hide password controls to manual and background SSH profiles.

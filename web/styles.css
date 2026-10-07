@@ -204,7 +204,8 @@ td small { font-size: 13px; line-height: 1.5; }
 .detail-role { display:inline-flex; margin-top:13px; padding:6px 10px; border:1px solid rgba(255,255,255,.25); border-radius:7px; background:rgba(255,255,255,.12); color:#d9ffed; font-size:14px; font-weight:750; }
 .memory-status { display:flex; align-items:center; gap:8px; padding:9px 12px; border:1px solid #adcabd; border-radius:20px; color:#294e42; background:#e8f7f0; font-size:14px; font-weight:700; }
 .memory-status i { width:8px; height:8px; border-radius:50%; background:var(--green-dark); box-shadow:0 0 0 4px rgba(8,126,88,.1); }
-.remembered-table { min-width: 1500px; }
+.remembered-table { min-width: 1660px; }
+.system-cell { min-width:150px; font-weight:700; overflow-wrap:anywhere; }
 .role-editor,.site-editor { display:flex; align-items:center; min-width:225px; gap:7px; }
 .role-editor input,.site-editor input { width:160px; min-width:0; border:1px solid #dce4ea; border-radius:7px; padding:8px 9px; color:var(--ink); background:#fbfcfd; outline:0; }
 .role-editor input:focus,.site-editor input:focus { border-color:#6bb79d; box-shadow:0 0 0 3px rgba(74,174,138,.1); }

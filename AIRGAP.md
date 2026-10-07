@@ -12,7 +12,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-offline.ps1
 
 For an ARM64 Docker host, add `-Platform linux/arm64`.
 
-The script creates `dist/netatlas-1.2.9-linux-amd64.tar`, its SHA-256 checksum, and the offline loader scripts. Copy the entire `dist` folder to approved removable media.
+The script creates `dist/netatlas-1.2.10-linux-amd64.tar`, its SHA-256 checksum, and the offline loader scripts. Copy the entire `dist` folder to approved removable media.
 
 ## 2. Load and run inside the air gap
 
@@ -20,7 +20,7 @@ Windows Docker host:
 
 ```powershell
 New-Item -ItemType Directory -Force .\netatlas-data
-.\load-and-run-airgap.ps1 -Archive .\netatlas-1.2.9-linux-amd64.tar -DataPath .\netatlas-data
+.\load-and-run-airgap.ps1 -Archive .\netatlas-1.2.10-linux-amd64.tar -DataPath .\netatlas-data
 ```
 
 Linux Docker host—first create the persistent local database folder:
@@ -40,7 +40,7 @@ sudo chcon -Rt container_file_t ./netatlas-data
 Then load and run NetAtlas:
 
 ```sh
-sh ./load-and-run-airgap.sh ./netatlas-1.2.9-linux-amd64.tar 8765 ./netatlas-data 0.0.0.0
+sh ./load-and-run-airgap.sh ./netatlas-1.2.10-linux-amd64.tar 8765 ./netatlas-data 0.0.0.0
 ```
 
 The Linux loader accepts checksum files copied from either Windows or Linux and verifies the hash independently of line-ending format. It also normalizes the local folder ownership to the container user (UID/GID 10001) and applies Docker's private SELinux label during the mount.
@@ -78,9 +78,9 @@ The container must have routes to both sites and all VLANs. Docker Desktop norma
 
 Deep Nmap OS detection is off by default. Enable it only when the extra fingerprint detail is needed; it uses at most two workers and requires `NET_RAW` and `NET_ADMIN`. The loader grants only those capabilities. The application itself runs as a non-root user with a read-only container filesystem.
 
-HTTP and HTTPS remain visible in inventory but are not exported as MobaXterm sessions. Filter or sort any column, select the required hosts, and export only that selection. Current-scan exports group by site/VLAN; direct scopes have no VLAN. Remembered and Systems exports follow your system order with sessions directly inside each system, without Windows/Linux subfolders. MobaXterm session names use roles without protocol suffixes; duplicate names receive numeric suffixes so both Windows SSH and RDP entries remain importable. Linux receives SSH only. Compatibility CSV now includes role.
+HTTP and HTTPS remain visible in inventory but are not exported as MobaXterm sessions. Filter or sort any column, select the required hosts, and export only that selection. Current-scan exports group by site/VLAN; direct scopes have no VLAN. Remembered and Systems exports sort systems by name and preserve host order, using the parent-folder rules below without Windows/Linux subfolders. MobaXterm session names use roles without protocol suffixes; duplicate names receive numeric suffixes so both Windows SSH and RDP entries remain importable. Linux receives SSH only. CSV exports include role and system.
 
-Version 1.2.9 migrates the existing database automatically. Keep and back up your existing `netatlas-data` folder when upgrading; do not replace it with an empty folder. Direct targets accept CIDR scopes (/20–/32) with a new site and no VLAN. Red flags, system membership, manual roles and site overrides persist across rescans. Red flags only mark deletion candidates; removal still requires confirmation.
+Version 1.2.10 migrates the existing database automatically. Keep and back up your existing `netatlas-data` folder when upgrading; do not replace it with an empty folder. Direct targets accept CIDR scopes (/20–/32) with a new site and no VLAN. Red flags, system membership, manual roles and site overrides persist across rescans. Red flags only mark deletion candidates; removal still requires confirmation.
 
 For a small ad-hoc scan, enter the individual IPs under **Direct server targets** and enable **Direct servers only**. The populated Site A and Site B VLAN lists are ignored for that run.
 
@@ -90,7 +90,9 @@ Remembered Hosts can export selected rows to MobaXterm or compatibility CSV with
 
 Overview is entirely based on Remembered Hosts, including OS, resource and site/VLAN totals, latest additions and reachability from each host's last completed check. Run a manual scan to establish initial reachability for older inventory. A scan never marks another site's hosts offline, and cancelled/failed scans do not mark hosts offline.
 
-Use **Systems** to create named groups (for example `RMS-Site-A`), select multiple servers, and drag them into a group. Drag above a host or use arrows to set order. Selected exports preserve saved system and host order.
+Use **Systems** to create named groups (for example `RMS-Site-A`), select multiple servers, and drag them into a group. Drag above a host or use arrows to set host order. Clicking Move on a selected host moves the whole selection. Systems and destination lists are sorted by name; exports retain the saved host order inside each system. Remembered Hosts and CSV exports include System.
+
+MobaXterm exports put numeric system names such as `99-3` under `RAFAEL`. Shared hyphenated prefixes form system/environment parents: `RMS-A/B` go under `RMS`, and `RMS-NP-A/B` go under `RMS\NP`. Full names remain leaf folders. Paths are determined from the full catalog, so selecting fewer hosts does not change the hierarchy. CSV retains the original system name in `system` and the grouped path in `folder`.
 
 Configure **Background scans** with an interval, site/VLAN lists and credentials. Scheduling is handled by the container, so closing the browser does not stop it. New resolved hosts appear in **New hosts**, whose tab shows a pending count. Approve selected records to add them to Remembered, or dismiss them. Existing hosts are refreshed without changing their saved roles or system membership.
 

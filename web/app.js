@@ -289,7 +289,7 @@ function hostColumnValue(host, key, raw = false) {
 function tableRows(rows, view, valueFor, globalQuery = "") {
   const query = globalQuery.trim().toLowerCase();
   const filtered = rows.filter(host => {
-    if (query && !Object.keys(view.filters).concat(["endpoint", "role", "location", "services", "os", "resources", "confidence", "last_seen", "seen_count"])
+    if (query && !Object.keys(view.filters).concat(["endpoint", "role", "system", "location", "services", "os", "resources", "confidence", "last_seen", "seen_count"])
       .some((key, index, all) => all.indexOf(key) === index && String(valueFor(host, key)).toLowerCase().includes(query))) return false;
     return Object.entries(view.filters).every(([key, value]) => !value || String(valueFor(host, key)).toLowerCase().includes(value.toLowerCase()));
   });
@@ -389,6 +389,7 @@ function filteredRemembered() {
 }
 
 function rememberedColumnValue(host, key, raw = false) {
+  if (key === "system") return host.system_name || "Unassigned";
   if (key === "last_seen") return raw ? Date.parse(host.last_seen || 0) : new Date(host.last_seen).toLocaleString();
   if (key === "seen_count") return raw ? Number(host.seen_count || 0) : String(host.seen_count || 0);
   return hostColumnValue(host, key, raw);
@@ -422,8 +423,11 @@ function renderRemembered() {
     const direct = host.direct_target || String(host.cidr || "").endsWith("/32");
     const siteCell = direct ? `<div class="site-editor"><input data-site-input value="${esc(host.site)}" maxlength="60" aria-label="Site for ${esc(host.hostname)}"><button data-site-save type="button">Save</button></div><small>${host.site_locked ? "Manual site" : "Direct target site"} · No VLAN · ${esc(host.cidr)}</small>` : `<strong>${esc(host.site)}</strong><small>${esc(host.vlan || "No VLAN")} · ${esc(host.cidr)}</small>`;
     return `<tr tabindex="0" data-remembered-index="${index}" class="${host.deletion_candidate ? "candidate-row" : ""}"><td class="select-cell"><input type="checkbox" data-remembered-select="${esc(hostKey(host))}" aria-label="Select ${esc(host.hostname || host.ip)}" ${state.rememberedSelected.has(hostKey(host)) ? "checked" : ""}></td><td><strong>${host.deletion_candidate ? '<span class="red-flag" title="Deletion candidate">⚑</span> ' : ""}${esc(host.hostname)}</strong><small>${esc(host.ip)}</small></td><td><div class="role-editor"><input data-role-input value="${esc(host.role)}" maxlength="80" aria-label="Role for ${esc(host.hostname)}"><button data-role-save type="button">Save</button></div>${host.role_locked ? '<small class="manual-role">Manual role</small>' : '<small>Defaults to hostname</small>'}</td><td>${siteCell}</td><td><div class="service-chips">${(host.services || []).map(serviceChip).join("")}</div></td><td><strong>${esc(host.os_version || host.os_family)}</strong><small>${esc(host.os_evidence)}</small></td><td><small>${esc(resourceText(host))}</small></td><td><strong>${esc(seen.toLocaleDateString())}</strong><small>${esc(seen.toLocaleTimeString())}</small></td><td><span class="seen-count">${host.seen_count}</span></td><td><div class="row-actions"><button class="flag-button ${host.deletion_candidate ? "flag-active" : ""}" data-flag-remembered type="button" aria-pressed="${Boolean(host.deletion_candidate)}" title="${host.deletion_candidate ? "Clear red flag" : "Mark deletion candidate"}" aria-label="${host.deletion_candidate ? "Clear red flag for" : "Mark deletion candidate:"} ${esc(host.hostname)}">⚑</button><button class="danger-icon" data-delete-remembered type="button" title="Remove from inventory" aria-label="Remove ${esc(host.hostname)} from inventory">×</button><span class="row-open">↗</span></div></td></tr>`;
-  }).join("") : '<tr><td colspan="10" class="table-empty">No resolved hosts match the current filters.</td></tr>';
+  }).join("") : '<tr><td colspan="11" class="table-empty">No resolved hosts match the current filters.</td></tr>';
   $$('[data-remembered-index]').forEach(row => {
+    const host = state.remembered[Number(row.dataset.rememberedIndex)];
+    const systemCell = row.insertCell(3); systemCell.className = "system-cell";
+    systemCell.textContent = host.system_name || "Unassigned";
     row.addEventListener("click", event => { if (!event.target.closest("input,button,a")) showHost(state.remembered[Number(row.dataset.rememberedIndex)], true); });
     row.addEventListener("keydown", event => { if ((event.key === "Enter" || event.key === " ") && !event.target.closest("input,button,a")) { event.preventDefault(); showHost(state.remembered[Number(row.dataset.rememberedIndex)], true); } });
   });
@@ -490,7 +494,7 @@ async function confirmDeleteRemembered(host) {
 async function loadRemembered() {
   try {
     const [hosts, overview, systems] = await Promise.all([api("/api/remembered-hosts"), api("/api/overview"), api("/api/systems")]);
-    state.remembered = hosts; state.systems = systems;
+    state.remembered = hosts; state.systems = systems.sort((a,b) => collator.compare(a.name,b.name));
     const validKeys = new Set(state.remembered.map(hostKey));
     state.rememberedSelected = new Set([...state.rememberedSelected].filter(key => validKeys.has(key)));
     state.systemSelected = new Set([...state.systemSelected].filter(key => validKeys.has(key)));
@@ -519,7 +523,7 @@ function openExportDialog(source) {
   state.exportSource = source;
   if (!$("#exportLinuxSshUser").value) $("#exportLinuxSshUser").value = state.job?.config?.linux_ssh_username || "";
   if (!$("#exportWindowsSshUser").value) $("#exportWindowsSshUser").value = state.job?.config?.windows_ssh_username || "";
-  $("#exportSelectionSummary").textContent = `Creates role-named sessions for ${count} selected host${count === 1 ? "" : "s"}.${source !== "scan" ? " Sessions sit directly inside their saved system folder." : ""} Windows receives SSH and RDP; Linux receives SSH. Duplicate role names receive a numeric suffix.`;
+  $("#exportSelectionSummary").textContent = `Creates role-named sessions for ${count} selected host${count === 1 ? "" : "s"}.${source !== "scan" ? " Systems are grouped under shared system/environment parents; numeric systems sit under RAFAEL. CSV includes the system name." : ""} Windows receives SSH and RDP; Linux receives SSH. Duplicate role names receive a numeric suffix.`;
   $("#exportDialog").showModal();
 }
 $("#exportButton").addEventListener("click", () => openExportDialog("scan"));
@@ -553,6 +557,7 @@ function exportHosts(source) {
 const post = (path, body) => api(path, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
 const hostSelection = hosts => hosts.map(({site, ip}) => ({site, ip}));
 const systemHosts = id => state.remembered.filter(host => (host.system_id || "") === id).sort((a,b) => a.system_position - b.system_position || a.hostname.localeCompare(b.hostname));
+const systemGroups = () => [...state.systems, {id:"", name:"Unassigned"}].sort((a,b) => collator.compare(a.name,b.name));
 function visibleSystemHosts(id) {
   const query = $("#systemSearch").value.trim().toLowerCase();
   return systemHosts(id).filter(host => !query || `${host.hostname} ${host.ip} ${host.site} ${host.vlan} ${host.role} ${host.os_version} ${host.system_name || "Unassigned"}`.toLowerCase().includes(query));
@@ -571,20 +576,14 @@ async function moveHosts(id, hosts, position, clearSelection = false) {
     await loadRemembered(); toast(`Saved order for ${hosts.length} host${hosts.length === 1 ? "" : "s"}.`); return true;
   } catch (error) { toast(error.message); return false; }
 }
-async function reorderSystem(id, direction) {
-  const ids = state.systems.map(system => system.id), index = ids.indexOf(id), target = index + direction;
-  if (target < 0 || target >= ids.length) return;
-  [ids[index], ids[target]] = [ids[target], ids[index]];
-  try { await post("/api/systems", {action:"reorder", ids}); await loadRemembered(); } catch (error) { toast(error.message); }
-}
 function renderSystems() {
-  const groups = [...state.systems, {id:"", name:"Unassigned"}];
+  const groups = systemGroups();
   const oldTarget = $("#systemMoveTarget").value;
   $("#systemMoveTarget").innerHTML = groups.map(system => `<option value="${esc(system.id)}">${esc(system.name)}</option>`).join("");
   if (groups.some(system => system.id === oldTarget)) $("#systemMoveTarget").value = oldTarget;
-  $("#systemsBoard").innerHTML = groups.map((system, index) => {
+  $("#systemsBoard").innerHTML = groups.map(system => {
     const hosts = visibleSystemHosts(system.id);
-    return `<section class="panel system-card" data-system="${esc(system.id)}"><header><div><h3>${esc(system.name)}</h3><small>${systemHosts(system.id).length} servers · ${hosts.length} visible</small></div><div class="system-actions">${system.id ? `<button class="button ghost compact" data-system-up ${index === 0 ? "disabled" : ""} aria-label="Move system up">↑</button><button class="button ghost compact" data-system-down ${index === state.systems.length-1 ? "disabled" : ""} aria-label="Move system down">↓</button><button class="button ghost compact" data-system-rename>Rename</button><button class="danger-icon" data-system-delete aria-label="Delete system">×</button>` : ""}</div></header><div class="system-hosts">${hosts.map(host => {
+    return `<section class="panel system-card" data-system="${esc(system.id)}"><header><div><h3>${esc(system.name)}</h3><small>${systemHosts(system.id).length} servers · ${hosts.length} visible</small></div><div class="system-actions">${system.id ? `<button class="button ghost compact" data-system-rename>Rename</button><button class="danger-icon" data-system-delete aria-label="Delete system">×</button>` : ""}</div></header><div class="system-hosts">${hosts.map(host => {
       const idx = state.remembered.indexOf(host), checked = state.systemSelected.has(hostKey(host));
       return `<div class="system-host ${checked ? "selected" : ""}" draggable="true" data-system-host="${idx}"><input type="checkbox" ${checked ? "checked" : ""} aria-label="Select ${esc(host.hostname)}"><span class="drag-handle" aria-hidden="true">⠿</span><button class="system-host-open"><strong>${host.deletion_candidate ? '<span class="red-flag">⚑</span> ' : ""}${esc(host.hostname)}</strong><small>${esc(host.role)} · ${esc(host.ip)} · ${esc(host.site)}</small></button><button class="order-button" data-host-move>Move…</button><button class="order-button" data-host-up aria-label="Move host up">↑</button><button class="order-button" data-host-down aria-label="Move host down">↓</button></div>`;
     }).join("") || '<p class="drop-placeholder">Drop servers here, or select servers and use Move selected.</p>'}</div></section>`;
@@ -596,7 +595,7 @@ function renderSystems() {
       row.classList.toggle("selected", event.target.checked); systemSelectionControls();
     };
     row.querySelector(".system-host-open").onclick = () => showHost(host, true);
-    row.querySelector("[data-host-move]").onclick = () => openMoveDialog([host]);
+    row.querySelector("[data-host-move]").onclick = () => openMoveDialog(state.systemSelected.has(hostKey(host)) ? exportHosts("systems") : [host]);
     row.ondragstart = event => {
       state.dragging = true;
       const hosts = state.systemSelected.has(hostKey(host)) ? exportHosts("systems") : [host];
@@ -627,8 +626,6 @@ function renderSystems() {
       } catch (_) { toast("Drag remembered servers into a system."); }
     };
     if (!id) return;
-    card.querySelector("[data-system-up]").onclick = () => reorderSystem(id, -1);
-    card.querySelector("[data-system-down]").onclick = () => reorderSystem(id, 1);
     card.querySelector("[data-system-rename]").onclick = async () => {
       const name = window.prompt("System name", state.systems.find(system => system.id === id).name);
       if (!name?.trim()) return;
@@ -675,9 +672,10 @@ window.addEventListener("blur", stopDragScroll);
 function openMoveDialog(hosts) {
   if (!hosts.length) return;
   state.pendingMove = hosts;
-  $("#moveDialogTarget").innerHTML = [...state.systems, {id:"", name:"Unassigned"}].map(system => `<option value="${esc(system.id)}">${esc(system.name)}</option>`).join("");
+  $("#moveDialogTarget").innerHTML = systemGroups().map(system => `<option value="${esc(system.id)}">${esc(system.name)}</option>`).join("");
   $("#moveDialogTarget").value = hosts[0].system_id || "";
   $("#moveDialogSummary").textContent = hosts.length === 1 ? `Move ${hosts[0].role || hosts[0].hostname} (${hosts[0].ip}).` : `Move ${hosts.length} servers.`;
+  $("#confirmSystemMove").textContent = hosts.length === 1 ? "Move server" : `Move ${hosts.length} servers`;
   $("#moveDialog").showModal();
 }
 $("#confirmSystemMove").onclick = async () => {

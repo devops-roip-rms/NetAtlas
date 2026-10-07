@@ -50,13 +50,29 @@ Docker deployments listen on all node interfaces by default. Restrict TCP/8765 t
 
 ## MobaXterm export
 
-From **Hosts**, **Remembered Hosts**, or **Systems**, select the required hosts and choose **Export selected**. Remembered exports place sessions directly under systems such as `RMS-Site-A`; hosts without a system use `Unassigned`. System and server order are saved and used in MobaXterm and compatibility CSV exports. Current-scan exports use site/VLAN folders, or just the site for direct scopes. There are no intermediate OS folders. Windows receives SSH and RDP entries; Linux receives SSH only. MobaXterm names use the role (hostname fallback), without protocol suffixes. Duplicate names, including a Windows server's second session, receive `(2)`, `(3)`, etc. to avoid overwriting INI keys. The session icon identifies its protocol. Compatibility CSV includes a separate `role` column; inventory CSV also includes role. HTTP and HTTPS remain inventory-only. Passwords are never exported. In MobaXterm, right-click **User sessions** and choose **Import sessions from file**.
+From **Hosts**, **Remembered Hosts**, or **Systems**, select the required hosts and choose **Export selected**. Remembered exports use your named systems and the parent-folder rules below; hosts without a system use `Unassigned`. Systems use name order and servers retain their saved order within a system. Current-scan exports use site/VLAN folders, or just the site for direct scopes. There are no intermediate OS folders. Windows receives SSH and RDP entries; Linux receives SSH only. MobaXterm names use the role (hostname fallback), without protocol suffixes. Duplicate names, including a Windows server's second session, receive `(2)`, `(3)`, etc. to avoid overwriting INI keys. The session icon identifies its protocol. CSV exports include `role` and `system` columns. HTTP and HTTPS remain inventory-only. Passwords are never exported. In MobaXterm, right-click **User sessions** and choose **Import sessions from file**.
+
+In 1.2.10, system names matching `digits-digits` (for example `99-3`, `88-1`, `392-3`, `874-3`) are grouped under `RAFAEL`. When two or more catalog system names share a hyphen prefix, it becomes a parent folder; additional shared prefixes become environment parents. Full system names remain leaf folders. For example:
+
+```text
+RMS
+├── RMS-A
+├── RMS-B
+└── NP
+    ├── RMS-NP-A
+    └── RMS-NP-B
+RAFAEL
+├── 99-3
+└── 392-3
+```
+
+Paths use the entire catalog, including empty systems, so selected-only exports keep the same hierarchy. Single unshared names and `Unassigned` remain at the top level. Systems are sorted by name, case-insensitively with numeric ordering (`RMS-2` before `RMS-10`); saved host order within each system is preserved. Compatibility and inventory CSV exports contain both `role` and `system` columns. CSV `system` is the original full name, while `folder` is the grouped export path.
 
 ## Remembered Overview and Systems
 
 Overview reads only the durable inventory, independently of the selected scan. It shows total remembered hosts, reachable/unreachable/unchecked hosts, services on hosts reachable at their last check, OS composition and exact OS counts, saved resource totals per site, counts per site/VLAN, and the ten most recently added hosts with dates. Reachability means TCP service response at the last completed check, not a continuous health check. Older records are initially unchecked. A complete error-free scan updates only addresses in its own site/scope; an offline host stays remembered. Resource totals retain the last collected facts. Identical VLAN names at different sites stay separate.
 
-Create a system in **Systems**, select servers and drag them together into its card. Drop above a server to insert there; dropping into empty card space appends. Use the arrows to order servers and systems, or **Move selected** as an alternative to dragging. Rename a system without losing membership. Deleting a system moves its servers to Unassigned without deleting them. Roles, site overrides, membership and ordering survive rescans.
+Create a system in **Systems**, select servers and drag them together into its card. Drop above a server to insert there; dropping into empty card space appends. Use the arrows to order servers within a system, or **Move selected** as an alternative to dragging. System cards and destination lists are always sorted by name. Clicking a selected host's **Move…** action moves the entire selection; clicking an unselected host moves only that host. Rename a system without losing membership. Deleting a system moves its servers to Unassigned without deleting them. Roles, site overrides, membership and host ordering survive rescans. Remembered Hosts includes a searchable, sortable System column, showing Unassigned when there is no system.
 
 Selection clears after a successful drop or manual move. Hold a dragged server near the top or bottom of the viewport to scroll. Each server also has a **Move…** action with a destination-system dialog, available from remembered host details as well. Click Overview metrics, OS groups, or site/VLAN groups to open the corresponding filtered remembered list; **Show all remembered hosts** clears that group filter.
 

@@ -140,10 +140,27 @@
           <div class="table-scroll">
             <table class="remembered-table">
               <thead>
-                <tr class="sort-row"><th class="select-cell"><input id="rememberedSelectVisible" type="checkbox" aria-label="Select all visible remembered hosts"></th><th><button data-remembered-sort="endpoint">Endpoint</button></th><th><button data-remembered-sort="role">Role name</button></th><th><button data-remembered-sort="location">Site / VLAN</button></th><th><button data-remembered-sort="services">Services</button></th><th><button data-remembered-sort="os">Operating system</button></th><th><button data-remembered-sort="resources">Resources</button></th><th><button data-remembered-sort="last_seen">Last seen</button></th><th><button data-remembered-sort="seen_count">Seen</button></th><th>Actions</th></tr>
-                <tr class="filter-row"><th></th><th><input data-remembered-filter="endpoint" placeholder="Filter endpoint" aria-label="Filter remembered endpoint column"></th><th><input data-remembered-filter="role" placeholder="Filter role" aria-label="Filter remembered role column"></th><th><input data-remembered-filter="location" placeholder="Filter site or VLAN" aria-label="Filter remembered site or VLAN column"></th><th><input data-remembered-filter="services" placeholder="Filter services" aria-label="Filter remembered services column"></th><th><input data-remembered-filter="os" placeholder="Filter OS" aria-label="Filter operating system column"></th><th><input data-remembered-filter="resources" placeholder="Filter resources" aria-label="Filter remembered resources column"></th><th><input data-remembered-filter="last_seen" placeholder="Filter last seen" aria-label="Filter last seen column"></th><th><input data-remembered-filter="seen_count" placeholder="Filter count" aria-label="Filter count column"></th><th></th></tr>
+                <tr class="sort-row">
+                  <th class="select-cell"><input id="rememberedSelectVisible" type="checkbox" aria-label="Select all visible remembered hosts"></th>
+                  <th><button data-remembered-sort="endpoint">Endpoint</button></th><th><button data-remembered-sort="role">Role name</button></th>
+                  <th><button data-remembered-sort="system">System</button></th><th><button data-remembered-sort="location">Site / VLAN</button></th>
+                  <th><button data-remembered-sort="services">Services</button></th><th><button data-remembered-sort="os">Operating system</button></th>
+                  <th><button data-remembered-sort="resources">Resources</button></th><th><button data-remembered-sort="last_seen">Last seen</button></th>
+                  <th><button data-remembered-sort="seen_count">Seen</button></th><th>Actions</th>
+                </tr>
+                <tr class="filter-row">
+                  <th></th><th><input data-remembered-filter="endpoint" placeholder="Filter endpoint" aria-label="Filter remembered endpoint column"></th>
+                  <th><input data-remembered-filter="role" placeholder="Filter role" aria-label="Filter remembered role column"></th>
+                  <th><input data-remembered-filter="system" placeholder="Filter system" aria-label="Filter remembered system column"></th>
+                  <th><input data-remembered-filter="location" placeholder="Filter site or VLAN" aria-label="Filter remembered site or VLAN column"></th>
+                  <th><input data-remembered-filter="services" placeholder="Filter services" aria-label="Filter remembered services column"></th>
+                  <th><input data-remembered-filter="os" placeholder="Filter OS" aria-label="Filter operating system column"></th>
+                  <th><input data-remembered-filter="resources" placeholder="Filter resources" aria-label="Filter remembered resources column"></th>
+                  <th><input data-remembered-filter="last_seen" placeholder="Filter last seen" aria-label="Filter last seen column"></th>
+                  <th><input data-remembered-filter="seen_count" placeholder="Filter count" aria-label="Filter count column"></th><th></th>
+                </tr>
               </thead>
-              <tbody id="rememberedTable"><tr><td colspan="10" class="table-empty">Resolved hosts will appear here after a scan.</td></tr></tbody>
+              <tbody id="rememberedTable"><tr><td colspan="11" class="table-empty">Resolved hosts will appear here after a scan.</td></tr></tbody>
             </table>
           </div>
         </div>
