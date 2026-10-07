@@ -288,6 +288,13 @@ html[data-theme="dark"] .history-type.background { background:#123b2e; color:#a4
 .system-card h3 { margin:0 0 7px; font-size:21px; overflow-wrap:anywhere; }
 .system-card small { color:var(--muted); font-size:13px; }
 .system-actions { display:flex; gap:5px; }
+.system-drag-handle { border:1px solid var(--line); border-radius:7px; padding:7px 10px; background:var(--panel); color:var(--muted); cursor:grab; font-size:24px; }
+.system-card header > div:first-of-type { flex:1; min-width:120px; }
+.system-filter { border:1px solid var(--line); border-radius:8px; padding:11px; background:var(--panel); color:var(--ink); min-width:200px; }
+.system-filter summary { cursor:pointer; font-weight:700; }
+#systemFilterOptions { max-height:260px; overflow-y:auto; display:grid; gap:10px; padding-top:16px; }
+#systemFilterOptions label { display:flex; align-items:center; gap:10px; font-size:15px; }
+#systemFilterOptions input { width:18px; height:18px; accent-color:var(--green-dark); }
 .system-hosts { padding:10px; min-height:95px; }
 .system-host { display:flex; align-items:center; padding:11px 8px; gap:7px; border:1px solid var(--line); border-radius:9px; margin-bottom:8px; background:var(--panel); }
 .system-host.selected { background:#e4f5ed; border-color:#368f6f; }

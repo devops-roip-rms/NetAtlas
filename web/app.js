@@ -6,6 +6,7 @@ const state = {
   rememberedTable: {sortKey: "last_seen", sortDir: "desc", filters: {}}
 };
 Object.assign(state, {systems: [], systemSelected: new Set(), discoveries: [], discoverySelected: new Set(), schedule: null});
+state.systemFilter = new Set();
 state.inventoryGroup = null;
 $$('input[type="password"]').forEach(input => {
   const wrapper = document.createElement("div"); wrapper.className = "password-control";
@@ -409,6 +410,8 @@ function updateRememberedSelectionControls(rows) {
   $("#rememberedSelectionCount").textContent = `${selectedCount} selected`;
   $("#rememberedClearSelectionButton").disabled = selectedCount === 0;
   $("#rememberedExportButton").disabled = selectedCount === 0;
+  $("#rememberedDeleteSelected").disabled = selectedCount === 0;
+  $("#rememberedDeleteSelected").textContent = selectedCount ? `Delete selected (${selectedCount})` : "Delete selected";
   $("#rememberedExportButton").textContent = selectedCount ? `Export selected (${selectedCount})` : "Export selected";
 }
 
@@ -494,7 +497,9 @@ async function confirmDeleteRemembered(host) {
 async function loadRemembered() {
   try {
     const [hosts, overview, systems] = await Promise.all([api("/api/remembered-hosts"), api("/api/overview"), api("/api/systems")]);
-    state.remembered = hosts; state.systems = systems.sort((a,b) => collator.compare(a.name,b.name));
+    state.remembered = hosts; state.systems = systems;
+    const validSystems = new Set(["", ...systems.map(system => system.id)]);
+    state.systemFilter = new Set([...state.systemFilter].filter(id => validSystems.has(id)));
     const validKeys = new Set(state.remembered.map(hostKey));
     state.rememberedSelected = new Set([...state.rememberedSelected].filter(key => validKeys.has(key)));
     state.systemSelected = new Set([...state.systemSelected].filter(key => validKeys.has(key)));
@@ -557,7 +562,16 @@ function exportHosts(source) {
 const post = (path, body) => api(path, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
 const hostSelection = hosts => hosts.map(({site, ip}) => ({site, ip}));
 const systemHosts = id => state.remembered.filter(host => (host.system_id || "") === id).sort((a,b) => a.system_position - b.system_position || a.hostname.localeCompare(b.hostname));
-const systemGroups = () => [...state.systems, {id:"", name:"Unassigned"}].sort((a,b) => collator.compare(a.name,b.name));
+const systemGroups = () => [...state.systems, {id:"", name:"Unassigned"}];
+const visibleSystemGroups = () => systemGroups().filter(system => !state.systemFilter.size || state.systemFilter.has(system.id));
+function renderSystemFilter() {
+  $("#systemFilterLabel").textContent = state.systemFilter.size ? `${state.systemFilter.size} system${state.systemFilter.size === 1 ? "" : "s"} shown` : "All systems";
+  $("#systemFilterOptions").innerHTML = systemGroups().map(system => `<label><input type="checkbox" data-system-filter="${esc(system.id)}" ${state.systemFilter.has(system.id) ? "checked" : ""}>${esc(system.name)}</label>`).join("");
+  $$('[data-system-filter]').forEach(input => input.onchange = () => {
+    input.checked ? state.systemFilter.add(input.dataset.systemFilter) : state.systemFilter.delete(input.dataset.systemFilter);
+    renderSystems();
+  });
+}
 function visibleSystemHosts(id) {
   const query = $("#systemSearch").value.trim().toLowerCase();
   return systemHosts(id).filter(host => !query || `${host.hostname} ${host.ip} ${host.site} ${host.vlan} ${host.role} ${host.os_version} ${host.system_name || "Unassigned"}`.toLowerCase().includes(query));
@@ -578,10 +592,11 @@ async function moveHosts(id, hosts, position, clearSelection = false) {
 }
 function renderSystems() {
   const groups = systemGroups();
+  renderSystemFilter();
   const oldTarget = $("#systemMoveTarget").value;
   $("#systemMoveTarget").innerHTML = groups.map(system => `<option value="${esc(system.id)}">${esc(system.name)}</option>`).join("");
   if (groups.some(system => system.id === oldTarget)) $("#systemMoveTarget").value = oldTarget;
-  $("#systemsBoard").innerHTML = groups.map(system => {
+  $("#systemsBoard").innerHTML = visibleSystemGroups().map(system => {
     const hosts = visibleSystemHosts(system.id);
     return `<section class="panel system-card" data-system="${esc(system.id)}"><header><div><h3>${esc(system.name)}</h3><small>${systemHosts(system.id).length} servers · ${hosts.length} visible</small></div><div class="system-actions">${system.id ? `<button class="button ghost compact" data-system-rename>Rename</button><button class="danger-icon" data-system-delete aria-label="Delete system">×</button>` : ""}</div></header><div class="system-hosts">${hosts.map(host => {
       const idx = state.remembered.indexOf(host), checked = state.systemSelected.has(hostKey(host));
@@ -611,10 +626,21 @@ function renderSystems() {
   });
   $$('[data-system]').forEach(card => {
     const id = card.dataset.system;
-    card.ondragover = event => { if (event.dataTransfer.types.includes("application/netatlas-hosts")) { event.preventDefault(); card.classList.add("drop-active"); } };
+    if (id) {
+      const handle = document.createElement("button"); handle.className = "system-drag-handle"; handle.type = "button"; handle.draggable = true;
+      handle.textContent = "⠿"; handle.setAttribute("aria-label", `Drag to reorder ${state.systems.find(system => system.id === id).name}`);
+      handle.title = "Drag onto another system to place before it"; handle.dataset.systemDrag = id;
+      card.querySelector("header").prepend(handle);
+      handle.ondragstart = event => { state.dragging = true; event.dataTransfer.setData("application/netatlas-system", id); event.dataTransfer.effectAllowed = "move"; };
+      handle.ondragend = () => { stopDragScroll(); $$(".drop-active").forEach(el => el.classList.remove("drop-active")); };
+    }
+    card.ondragover = event => { if (event.dataTransfer.types.some(type => ["application/netatlas-hosts", "application/netatlas-system"].includes(type))) { event.preventDefault(); card.classList.add("drop-active"); } };
     card.ondragleave = event => { if (!card.contains(event.relatedTarget)) card.classList.remove("drop-active"); };
     card.ondrop = event => {
       event.preventDefault(); card.classList.remove("drop-active"); stopDragScroll();
+      if (event.dataTransfer.types.includes("application/netatlas-system")) {
+        reorderSystemBefore(event.dataTransfer.getData("application/netatlas-system"), id); return;
+      }
       try {
         const selection = JSON.parse(event.dataTransfer.getData("application/netatlas-hosts"));
         const keys = new Set(selection.map(hostKey)), hosts = state.remembered.filter(host => keys.has(hostKey(host)));
@@ -643,10 +669,29 @@ $("#newSystemForm").onsubmit = async event => {
   try { await post("/api/systems", {name:$("#newSystemName").value}); $("#newSystemName").value = ""; await loadRemembered(); } catch (error) { toast(error.message); }
 };
 $("#systemSearch").oninput = renderSystems;
-$("#systemSelectAll").onclick = () => { [...state.systems, {id:""}].flatMap(system => visibleSystemHosts(system.id)).forEach(host => state.systemSelected.add(hostKey(host))); renderSystems(); };
+$("#systemSelectAll").onclick = () => { visibleSystemGroups().flatMap(system => visibleSystemHosts(system.id)).forEach(host => state.systemSelected.add(hostKey(host))); renderSystems(); };
+$("#systemFilterAll").onclick = () => { state.systemFilter.clear(); renderSystems(); };
 $("#systemClear").onclick = () => { state.systemSelected.clear(); renderSystems(); };
 $("#systemMoveButton").onclick = () => moveHosts($("#systemMoveTarget").value, exportHosts("systems"), undefined, true);
 $("#systemsExportButton").onclick = () => openExportDialog("systems");
+
+async function reorderSystemBefore(source, target) {
+  if (!source || source === target || !state.systems.some(system => system.id === source)) return;
+  const ids = state.systems.map(system => system.id).filter(id => id !== source);
+  ids.splice(target ? ids.indexOf(target) : ids.length, 0, source);
+  try { await post("/api/systems", {action:"reorder", ids}); await loadRemembered(); toast("System order saved."); }
+  catch (error) { toast(error.message); }
+}
+
+$("#rememberedDeleteSelected").onclick = async () => {
+  const hosts = selectedRemembered();
+  if (!hosts.length || !window.confirm(`Delete ${hosts.length} selected server${hosts.length === 1 ? "" : "s"} from Remembered Hosts?\n\n${hosts.slice(0,10).map(host => `${host.hostname} (${host.ip})`).join("\n")}${hosts.length > 10 ? "\n…" : ""}\n\nThis includes selected hosts hidden by filters. This cannot be undone; a later scan may add them again.`)) return;
+  const button = $("#rememberedDeleteSelected"); button.disabled = true;
+  try {
+    const result = await post("/api/remembered-hosts/delete-selected", {hosts:hostSelection(hosts)});
+    state.rememberedSelected.clear(); await loadRemembered(); toast(`Deleted ${result.count} remembered servers.`);
+  } catch (error) { toast(error.message); updateRememberedSelectionControls(filteredRemembered()); }
+};
 
 function stopDragScroll() {
   state.dragging = false; state.dragScrollSpeed = 0;

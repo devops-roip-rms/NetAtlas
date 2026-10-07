@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.11
+
+- Added drag handles for system-card ordering; order persists after reload/restart and applies to destinations and exports. Name ordering remains the default until the first manual arrangement.
+- Added a checkbox multi-select Systems filter, including Unassigned. Select visible only selects hosts in displayed systems; hidden systems retain their order during a drag.
+- Added Delete selected to Remembered Hosts with an explicit confirmation listing selected endpoints, including hidden selections. Backend deletion validates the entire selection and commits atomically.
+- Each exported MobaXterm root group receives a random built-in icon; all descendant folders reuse that root icon. Session protocol icons stay unchanged.
+- Remembered hosts deduplicate by normalized hostname within a site. Prefer a last octet not ending in 0 (13 over 10, 52 over 50, 107 over 100); ties keep the oldest saved record. Matching names in different sites remain separate, and all-zero-ending alternatives keep one record.
+- Duplicate collapse preserves manual roles, system membership/order, red flags and collected OS/resources. Removed duplicate records are archived in SQLite's duplicate_host_archive table. Scan results retain all responding endpoints.
+- Background alias discoveries refresh known servers rather than creating duplicate review entries; new multi-IP hosts require one approval, and dismissal applies to their identity.
+
 ## 1.2.10
 
 - Clicking Move on a selected Systems host now moves all selected hosts; clicking an unselected host moves just that host.

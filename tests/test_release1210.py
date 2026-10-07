@@ -59,7 +59,7 @@ class Release1210Tests(unittest.TestCase):
         hosts = [self.host("Zulu", 1, system_order=0), self.host("RMS-10", 2, system_order=1),
                  self.host("RMS-2", 3, system_order=4, system_position=1),
                  self.host("RMS-2", 4, system_order=4, system_position=0)]
-        self.assertEqual([h["ip"] for h in backend.ordered_export_hosts(hosts)], ["192.0.2.4", "192.0.2.3", "192.0.2.2", "192.0.2.1"])
+        self.assertEqual([h["ip"] for h in backend.ordered_export_hosts(hosts)], ["192.0.2.1", "192.0.2.2", "192.0.2.4", "192.0.2.3"])
         unassigned = self.host("", 1)
         row = list(csv.DictReader(io.StringIO(backend.export_csv(backend.ScanJob(id="x", config={}, results=[unassigned])).decode("utf-8-sig"))))[0]
         self.assertEqual(row["system"], "Unassigned")

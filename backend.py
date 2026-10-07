@@ -7,6 +7,7 @@ import io
 import ipaddress
 import json
 import os
+import random
 import re
 import shutil
 import socket
@@ -44,7 +45,7 @@ WEB_DIR = APP_DIR / "web"
 DATA_DIR = Path(os.environ.get("NETATLAS_DATA_DIR", APP_DIR / "data")).resolve()
 DATA_DIR.mkdir(exist_ok=True)
 HOSTS_DB = DATA_DIR / "hosts.db"
-APP_VERSION = "1.2.10"
+APP_VERSION = "1.2.11"
 SENSITIVE_CONFIG_KEYS = {"ssh_password", "linux_ssh_password", "windows_ssh_password", "password"}
 
 PRIMARY_PORTS = {22: "SSH", 80: "HTTP", 443: "HTTPS", 3389: "RDP"}
@@ -729,6 +730,7 @@ def init_hosts_db() -> None:
             CREATE TABLE IF NOT EXISTS discoveries (site TEXT NOT NULL, ip TEXT NOT NULL, host_json TEXT NOT NULL,
                 first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, dismissed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(site, ip));
             CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS duplicate_host_archive (id INTEGER PRIMARY KEY, archived_at TEXT NOT NULL, site TEXT NOT NULL, ip TEXT NOT NULL, survivor_ip TEXT NOT NULL, record_json TEXT NOT NULL);
         """)
         connection.commit()
     finally:
@@ -739,6 +741,7 @@ def remember_job_hosts(job: ScanJob) -> int:
     """Merge resolved scan results into the durable host inventory."""
     init_hosts_db()
     remembered = 0
+    touched = set()
     connection = hosts_db_connection()
     try:
         for host in job.results:
@@ -756,6 +759,7 @@ def remember_job_hosts(job: ScanJob) -> int:
                 ).fetchone()
                 if locked:
                     site = locked["site"]
+            touched.add((site, host["hostname"].casefold()))
             connection.execute(
                 """
                 INSERT INTO remembered_hosts (
@@ -805,10 +809,70 @@ def remember_job_hosts(job: ScanJob) -> int:
             connection.execute("UPDATE remembered_hosts SET reachable=1, last_checked=?, added_at=CASE WHEN added_at='' THEN ? ELSE added_at END WHERE site=? AND ip=?", (observed, utc_now(), site, clean_text(host.get("ip"), 64)))
             connection.execute("DELETE FROM discoveries WHERE site=? AND ip=?", (site, clean_text(host.get("ip"), 64)))
             remembered += 1
+        collapse_remembered_duplicates(connection, touched)
+        for row in connection.execute("SELECT site, ip, host_json FROM discoveries").fetchall():
+            if host_identity(json.loads(row["host_json"])) in touched:
+                connection.execute("DELETE FROM discoveries WHERE site=? AND ip=?", (row["site"], row["ip"]))
         connection.commit()
     finally:
         connection.close()
     return remembered
+
+
+def host_identity(host: dict) -> tuple[str, str]:
+    return clean_text(host.get("site"), 60), normalize_hostname(host.get("hostname")).casefold()
+
+
+def preferred_ip_key(host: dict) -> tuple:
+    return (str(host["ip"]).split(".")[-1].endswith("0"), host.get("first_seen") or host.get("discovered_at") or "", int(ipaddress.ip_address(host["ip"])))
+
+
+def preferred_observations(hosts: list[dict]) -> list[dict]:
+    groups = {}
+    for host in hosts:
+        key = host_identity(host)
+        if not key[1]:
+            continue
+        if key not in groups or preferred_ip_key(host) < preferred_ip_key(groups[key]):
+            groups[key] = host
+    return list(groups.values())
+
+
+def collapse_remembered_duplicates(connection: sqlite3.Connection, touched: set[tuple[str, str]]) -> None:
+    groups = {}
+    for row in connection.execute("SELECT * FROM remembered_hosts ORDER BY first_seen, ip"):
+        host = dict(row)
+        identity = host_identity(host)
+        if identity in touched:
+            groups.setdefault(identity, []).append(host)
+    for identity, rows in groups.items():
+        if len(rows) < 2:
+            continue
+        survivor = min(rows, key=preferred_ip_key)
+        merged = dict(survivor)
+        for old in rows:
+            if old["role_locked"] and not merged["role_locked"]:
+                merged.update(role=old["role"], role_locked=1)
+            if old["system_id"] and not merged["system_id"]:
+                merged.update(system_id=old["system_id"], system_position=old["system_position"])
+            if old["deletion_candidate"]:
+                merged.update(deletion_candidate=1, flagged_at=old["flagged_at"])
+            if old["os_confidence"] > merged["os_confidence"]:
+                for field in ("os_family", "os_version", "os_confidence", "os_evidence"):
+                    merged[field] = old[field]
+            if merged["resources_json"] == "{}" and old["resources_json"] != "{}":
+                merged.update(resources_json=old["resources_json"], resource_status=old["resource_status"])
+        merged["first_seen"] = min(row["first_seen"] for row in rows)
+        merged["added_at"] = min((row["added_at"] for row in rows if row["added_at"]), default=merged["first_seen"])
+        merged["seen_count"] = sum(row["seen_count"] for row in rows)
+        merged["site_locked"] = max(row["site_locked"] for row in rows)
+        fields = ("role", "role_locked", "system_id", "system_position", "deletion_candidate", "flagged_at", "os_family", "os_version", "os_confidence", "os_evidence", "resources_json", "resource_status", "first_seen", "added_at", "seen_count", "site_locked")
+        connection.execute("UPDATE remembered_hosts SET " + ",".join(field + "=?" for field in fields) + " WHERE site=? AND ip=?", [merged[field] for field in fields] + [survivor["site"], survivor["ip"]])
+        for old in rows:
+            if old["ip"] == survivor["ip"]:
+                continue
+            connection.execute("INSERT INTO duplicate_host_archive(archived_at,site,ip,survivor_ip,record_json) VALUES(?,?,?,?,?)", (utc_now(), old["site"], old["ip"], survivor["ip"], json.dumps(old)))
+            connection.execute("DELETE FROM remembered_hosts WHERE site=? AND ip=?", (old["site"], old["ip"]))
 
 
 def decode_json_field(value: str, fallback: object) -> object:
@@ -838,11 +902,11 @@ def list_remembered_hosts() -> list[dict]:
         host["deletion_candidate"] = bool(host.get("deletion_candidate"))
         normalize_host_record(host)
         hosts.append(host)
-    system_map = {system["id"]: system for system in list_systems()}
+    system_map = {system["id"]: {**system, "export_order": index} for index, system in enumerate(list_systems())}
     for host in hosts:
         system = system_map.get(host.get("system_id"), {})
         host["system_name"] = system.get("name", "")
-        host["system_order"] = system.get("position", 2147483647)
+        host["system_order"] = system.get("export_order", 2147483647)
         # Use the entire system catalog so selected-only exports retain their paths.
         host["system_folder"] = system_folder(host["system_name"], [s["name"] for s in system_map.values()])
     return hosts
@@ -929,10 +993,24 @@ def delete_remembered_host(site: object, ip: object) -> dict:
     return {"ok": True, "site": site_name, "ip": address}
 
 
+def delete_remembered_selected(payload: dict) -> dict:
+    hosts = selected_hosts_from_list(list_remembered_hosts(), payload.get("hosts"), "remembered inventory")
+    requested = {(clean_text(item.get("site"), 120), clean_text(item.get("ip"), 64)) for item in payload["hosts"]}
+    if requested != {(host["site"], host["ip"]) for host in hosts}:
+        raise ValueError("Selection changed; refresh the inventory before deleting")
+    with closing(hosts_db_connection()) as connection, connection:
+        for host in hosts:
+            if connection.execute("DELETE FROM remembered_hosts WHERE site=? AND ip=?", (host["site"], host["ip"])).rowcount != 1:
+                raise ValueError("Selection changed; nothing was deleted")
+    return {"ok": True, "count": len(hosts)}
+
+
 def list_systems() -> list[dict]:
     init_hosts_db()
     with closing(hosts_db_connection()) as connection:
-        return sorted([dict(row) for row in connection.execute("SELECT * FROM systems")], key=lambda system: system_name_key(system["name"]))
+        systems = [dict(row) for row in connection.execute("SELECT * FROM systems ORDER BY position, name COLLATE NOCASE")]
+        manual = connection.execute("SELECT value FROM settings WHERE name='system_order_manual'").fetchone()
+        return systems if manual else sorted(systems, key=lambda system: system_name_key(system["name"]))
 
 
 def edit_system(payload: dict) -> dict:
@@ -962,6 +1040,7 @@ def edit_system(payload: dict) -> dict:
                 raise ValueError("Include every system exactly once")
             for position, identifier in enumerate(ids):
                 connection.execute("UPDATE systems SET position=? WHERE id=?", (position, identifier))
+            connection.execute("INSERT OR REPLACE INTO settings(name,value) VALUES('system_order_manual','true')")
         else:
             raise ValueError("Unknown system action")
     return {"ok": True, "id": system_id}
@@ -1021,8 +1100,8 @@ def record_scan_inventory(job: ScanJob, plan: list[dict]) -> None:
         for host in job.results:
             normalize_host_record(host)
             key = inventory_key(host, known)
-            if key in known_keys:
-                old = next(row for row in known if (row["site"], row["ip"]) == key)
+            old = next((row for row in known if (row["site"], row["ip"]) == key or (host_identity(host)[1] and host_identity(row) == host_identity(host))), None)
+            if old:
                 if not host["hostname"]:
                     host["hostname"] = old["hostname"]
                     host["role"] = infer_host_role(host)
@@ -1031,7 +1110,7 @@ def record_scan_inventory(job: ScanJob, plan: list[dict]) -> None:
                 new.append(host)
         remember_job_hosts(ScanJob(id=job.id, config={}, results=existing))
         with closing(hosts_db_connection()) as connection, connection:
-            for host in new:
+            for host in preferred_observations(new):
                 if not host.get("hostname"):
                     continue
                 observed = host.get("discovered_at") or utc_now()
@@ -1052,7 +1131,9 @@ def list_discoveries() -> list[dict]:
     with closing(hosts_db_connection()) as connection:
         rows = connection.execute("""SELECT d.* FROM discoveries d WHERE dismissed=0 AND NOT EXISTS
             (SELECT 1 FROM remembered_hosts h WHERE h.site=d.site AND h.ip=d.ip) ORDER BY first_seen DESC""").fetchall()
-    return [{**json.loads(row["host_json"]), "first_seen": row["first_seen"], "last_seen": row["last_seen"]} for row in rows]
+        dismissed = {host_identity(json.loads(row[0])) for row in connection.execute("SELECT host_json FROM discoveries WHERE dismissed=1")}
+    known_identities = {host_identity(host) for host in list_remembered_hosts()} | dismissed
+    return preferred_observations([{**json.loads(row["host_json"]), "first_seen": row["first_seen"], "last_seen": row["last_seen"]} for row in rows if host_identity(json.loads(row["host_json"])) not in known_identities])
 
 
 def review_discoveries(payload: dict) -> dict:
@@ -1068,8 +1149,10 @@ def review_discoveries(payload: dict) -> dict:
                 connection.execute("UPDATE remembered_hosts SET last_seen=?, last_checked=? WHERE site=? AND ip=?", (host["last_seen"], host["last_seen"], host["site"], host["ip"]))
     elif action == "dismiss":
         with closing(hosts_db_connection()) as connection, connection:
-            for host in hosts:
-                connection.execute("UPDATE discoveries SET dismissed=1 WHERE site=? AND ip=?", (host["site"], host["ip"]))
+            identities = {host_identity(host) for host in hosts}
+            for row in connection.execute("SELECT site,ip,host_json FROM discoveries").fetchall():
+                if host_identity(json.loads(row["host_json"])) in identities:
+                    connection.execute("UPDATE discoveries SET dismissed=1 WHERE site=? AND ip=?", (row["site"], row["ip"]))
     else:
         raise ValueError("Choose approve or dismiss")
     return {"ok": True, "count": len(hosts)}
@@ -1363,7 +1446,7 @@ def session_folder(host: dict, system_names: list[str] | None = None) -> str:
 
 
 def ordered_export_hosts(hosts: list[dict]) -> list[dict]:
-    return sorted(hosts, key=lambda host: (system_name_key(host.get("system_name") or "Unassigned"),
+    return sorted(hosts, key=lambda host: (int(host.get("system_order", 2147483647)), system_name_key(host.get("system_name") or "Unassigned"),
                   int(host.get("system_position", 0)), str(host.get("hostname", "")).lower(), host["site"], host["ip"]))
 
 
@@ -1392,8 +1475,12 @@ def export_mobaxterm(job: ScanJob, linux_ssh_user: str = "", rdp_user: str = "",
                 sections.setdefault("\\".join(parts[:depth]), [])
             sections.setdefault(folder, []).extend(sessions)
     lines = ["[Bookmarks]", "SubRep=NetAtlas", "ImgNum=41", ""]
+    root_icons = {}
     for index, folder in enumerate(sections, 1):
-        lines += [f"[Bookmarks_{index}]", f"SubRep={folder}", "ImgNum=41"]
+        root = folder.split("\\")[0]
+        if root not in root_icons:
+            root_icons[root] = random.choice((41, 109, 91))
+        lines += [f"[Bookmarks_{index}]", f"SubRep={folder}", f"ImgNum={root_icons[root]}"]
         used: set[str] = set()
         for name, value in sections[folder]:
             unique, duplicate = name, 1
@@ -1527,6 +1614,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/remembered-hosts/delete":
                 payload = self.json_body()
                 self.send_json(delete_remembered_host(payload.get("site"), payload.get("ip")))
+                return
+            if path == "/api/remembered-hosts/delete-selected":
+                self.send_json(delete_remembered_selected(self.json_body()))
                 return
             if path == "/api/remembered-hosts/export":
                 payload = self.json_body()

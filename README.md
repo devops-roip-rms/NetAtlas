@@ -12,6 +12,8 @@ The basic scanner uses the Python standard library. For password-authenticated S
 
 The Hosts and Remembered Hosts tables support per-column filters, click-to-sort headers, and selected-only exports. Both views can generate compatibility CSV and MobaXterm session lists; the live Hosts view also exports the full inventory CSV. Remembered hosts can be removed with an explicit confirmation prompt.
 
+In 1.2.11, **Delete selected** removes the entire selected remembered set, including selections hidden by filters. The confirmation shows endpoints and warns that deletion cannot be undone; later scans may add them again. Cancelling does not change inventory.
+
 ## Docker and air-gap deployment
 
 The image includes Python, Nmap, OpenSSH, and the complete GUI. Build a transferable image and checksum with:
@@ -68,6 +70,10 @@ RAFAEL
 
 Paths use the entire catalog, including empty systems, so selected-only exports keep the same hierarchy. Single unshared names and `Unassigned` remain at the top level. Systems are sorted by name, case-insensitively with numeric ordering (`RMS-2` before `RMS-10`); saved host order within each system is preserved. Compatibility and inventory CSV exports contain both `role` and `system` columns. CSV `system` is the original full name, while `folder` is the grouped export path.
 
+From 1.2.11, name order is the default until you drag system cards into your preferred order. Drag a card's header grip onto another card to place it before that system; drop onto Unassigned to put it last. The saved system order applies to the board, destination lists and exports, and survives restart. The **All systems** dropdown lets you show one or several systems using checkboxes; clear them or choose **Show all systems** to remove the filter. Hidden systems keep their relative order during rearrangement. **Select visible** selects hosts only from displayed systems. Existing hidden host selections remain selected until cleared.
+
+In each MobaXterm export, every root group receives a randomly selected built-in icon; its descendants all inherit that icon. Session SSH/RDP icons are unchanged. Icons are chosen per export and may differ next time.
+
 ## Remembered Overview and Systems
 
 Overview reads only the durable inventory, independently of the selected scan. It shows total remembered hosts, reachable/unreachable/unchecked hosts, services on hosts reachable at their last check, OS composition and exact OS counts, saved resource totals per site, counts per site/VLAN, and the ten most recently added hosts with dates. Reachability means TCP service response at the last completed check, not a continuous health check. Older records are initially unchecked. A complete error-free scan updates only addresses in its own site/scope; an offline host stays remembered. Resource totals retain the last collected facts. Identical VLAN names at different sites stay separate.
@@ -85,5 +91,11 @@ In **Background scans**, enter an interval (1–10080 minutes), the two site nam
 SSH profiles have **Show/Hide** password controls. Recent scans includes both manual and background runs with explicit labels. Progress stays at most 99% while enrichment and inventory updates are running, and reaches 100% only when the scan completes.
 
 Background scans refresh remembered hosts but place newly resolved site/IP records in **New hosts**. The tab count shows how many await review. Select records to add them to Remembered, or dismiss them so later background sightings stay hidden. Repeated discoveries update one record. Manual scans retain their automatic-add behavior. Unresolved new hostnames do not enter the queue.
+
+## Duplicate IPs for one server
+
+Remembered inventory matches normalized, case-insensitive hostnames within the same site. If the same hostname responds on two addresses, prefer the IP whose last octet does not end in `0`: `.13` over `.10`, `.52` over `.50`, `.107` over `.100`. If both have the same preference, retain the oldest saved record (numeric address breaks ties). If all alternatives end in `0`, retain one rather than dropping the server. Identical names in different sites stay separate. Unresolved hosts do not qualify for this rule, and scan results still show all responding endpoints.
+
+On a new scan, matching remembered duplicates are merged transactionally. Manual role, system membership, red flag and saved collected facts survive an address replacement; if conflicting manual values exist, the preferred record's values win. Removed duplicate rows are retained as JSON snapshots in the local SQLite `duplicate_host_archive` table for administrator recovery. Back up `netatlas-data` before upgrading. Background aliases of an already-known server update that server; new multi-address identities show one review entry, and approving/dismissing applies to the server identity.
 
 The SQLite database saves the schedule, systems, discovery queue and inventory. Scheduled credentials use Fernet authenticated encryption; `schedule.key` in the same local data volume is created with mode 0600 on Linux. Back up the entire `netatlas-data` folder, including this key, to preserve schedule credentials. Protect that folder: a user who can read both the database and key can decrypt them. Re-enter passwords when replacing a schedule; **Stop schedule** cancels its active run and clears saved credentials. No schedule passwords are returned to the GUI, history or exports.

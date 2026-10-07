@@ -134,6 +134,7 @@
             <label class="search"><span>⌕</span><input id="rememberedSearch" type="search" placeholder="Search all columns…"></label>
             <button class="button ghost compact" id="rememberedSelectVisibleButton" type="button">Select visible</button>
             <button class="button ghost compact" id="rememberedClearSelectionButton" type="button" disabled>Clear selection</button>
+            <button class="danger-button" id="rememberedDeleteSelected" type="button" disabled>Delete selected</button>
             <strong class="selection-count" id="rememberedSelectionCount">0 selected</strong>
             <span id="rememberedCount">0 remembered hosts</span>
           </div>
@@ -176,6 +177,7 @@
         <div class="panel system-toolbar">
           <form id="newSystemForm"><label class="sr-only" for="newSystemName">New system name</label><input id="newSystemName" placeholder="New system, e.g. RMS-Site-A" maxlength="80" required><button class="button primary" type="submit">Create system</button></form>
           <label class="search"><span>⌕</span><input id="systemSearch" type="search" placeholder="Find hosts or systems…"></label>
+          <details class="system-filter"><summary id="systemFilterLabel">All systems</summary><div id="systemFilterOptions"></div><button class="button ghost compact" id="systemFilterAll" type="button">Show all systems</button></details>
           <button class="button ghost" id="systemSelectAll">Select visible</button><button class="button ghost" id="systemClear">Clear</button><strong id="systemSelectionCount">0 selected</strong>
           <label class="move-target-label">Move to system<select id="systemMoveTarget" aria-label="Destination system"></select></label><button class="button ghost" id="systemMoveButton">Move selected</button>
         </div>
